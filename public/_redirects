@@ -1,1 +1,9 @@
-/episode/* /content/:splat 301
+# NOTE: The old rule here — "/episode/* /content/:splat 301" — was
+# permanently redirecting every single episode page to a mismatched
+# /content/:id URL before the app even ran. That meant Google (and users)
+# could never actually reach /episode/:id pages directly, which is very
+# likely a major reason episode pages were not getting indexed.
+#
+# The episode.$id.tsx route is a real, working page with its own SEO meta
+# tags — it should be served directly, not redirected away. No redirects
+# are needed here right now.

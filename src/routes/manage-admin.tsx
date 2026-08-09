@@ -18,6 +18,10 @@ import {
   Sparkles,
   Send,
   Upload,
+  BarChart3,
+  TrendingUp,
+  Download,
+  Flame,
 } from "lucide-react";
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
 import { splitGenres, genreBadgeClass } from "@/lib/subtitles";
@@ -429,7 +433,7 @@ type Status =
 
 function Dashboard() {
   const qc = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"subtitles" | "requests">("subtitles");
+  const [activeTab, setActiveTab] = useState<"subtitles" | "requests" | "analytics">("subtitles");
   const [form, setForm] = useState<FormState>(EMPTY);
   const [status, setStatus] = useState<Status>({ type: "idle" });
   const [search, setSearch] = useState("");
@@ -449,7 +453,7 @@ function Dashboard() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from(SUBTITLES_TABLE)
-        .select("*") // <-- select("*") යෙදීමෙන් metatags සහ telegram_link සාර්ථකව කියවා ගනී
+        .select("*") // <-- select("*") යෙදීමෙන් metatags, telegram_link, download_count සාර්ථකව කියවා ගනී
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as Subtitle[];
@@ -469,11 +473,81 @@ function Dashboard() {
     enabled: activeTab === "requests",
   });
 
+  // 🟢 Download Analytics — raw event log (last 30 days, capped at 5000 rows)
+  // powers "downloads today" / "trending today" / "last 7 days" in the
+  // Analytics tab below. The lifetime total itself comes straight from
+  // rows[].download_count, which download_events.subtitle_id keeps in sync.
+  const { data: downloadEvents, isLoading: analyticsLoading } = useQuery({
+    queryKey: ["download_events", "admin-last-30-days"],
+    queryFn: async () => {
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("download_events")
+        .select("subtitle_id, downloaded_at")
+        .gte("downloaded_at", since)
+        .order("downloaded_at", { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      return (data ?? []) as { subtitle_id: number; downloaded_at: string }[];
+    },
+    enabled: activeTab === "analytics",
+  });
+
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows ?? [];
     return (rows ?? []).filter((r) => r.title?.toLowerCase().includes(q));
   }, [rows, search]);
+
+  // 🟢 Download Analytics — derived stats for the Analytics tab
+  const analytics = useMemo(() => {
+    const allRows = rows ?? [];
+    const events = downloadEvents ?? [];
+
+    const totalAllTime = allRows.reduce((sum, r) => sum + (Number(r.download_count) || 0), 0);
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const todayCounts = new Map<number, number>();
+    const weekCounts = new Map<number, number>();
+    let todayTotal = 0;
+    let weekTotal = 0;
+
+    for (const ev of events) {
+      const t = new Date(ev.downloaded_at);
+      if (t >= sevenDaysAgo) {
+        weekTotal += 1;
+        weekCounts.set(ev.subtitle_id, (weekCounts.get(ev.subtitle_id) ?? 0) + 1);
+      }
+      if (t >= startOfToday) {
+        todayTotal += 1;
+        todayCounts.set(ev.subtitle_id, (todayCounts.get(ev.subtitle_id) ?? 0) + 1);
+      }
+    }
+
+    const rowById = new Map(allRows.map((r) => [Number(r.id), r]));
+
+    const trendingToday = Array.from(todayCounts.entries())
+      .map(([id, count]) => ({ row: rowById.get(id), count }))
+      .filter((x) => x.row)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const trendingWeek = Array.from(weekCounts.entries())
+      .map(([id, count]) => ({ row: rowById.get(id), count }))
+      .filter((x) => x.row)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const topAllTime = [...allRows]
+      .sort((a, b) => (Number(b.download_count) || 0) - (Number(a.download_count) || 0))
+      .slice(0, 10);
+
+    return { totalAllTime, todayTotal, weekTotal, trendingToday, trendingWeek, topAllTime };
+  }, [rows, downloadEvents]);
 
   const editing = form.id !== null;
 
@@ -747,6 +821,16 @@ function Dashboard() {
               <span className="w-2.5 h-2.5 rounded-full bg-destructive animate-pulse" />
             )}
           </button>
+          <button
+            onClick={() => setActiveTab("analytics")}
+            className={`px-5 py-3 text-sm font-semibold border-b-2 transition flex items-center gap-2 ${
+              activeTab === "analytics"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" /> Analytics
+          </button>
         </div>
       </div>
 
@@ -1009,6 +1093,11 @@ function Dashboard() {
                         <th className="text-left px-4 py-3 font-semibold">Year</th>
                         <th className="text-left px-4 py-3 font-semibold">Rating</th>
                         <th className="text-left px-4 py-3 font-semibold">S/E</th>
+                        <th className="text-left px-4 py-3 font-semibold">
+                          <span className="inline-flex items-center gap-1">
+                            <Download className="w-3.5 h-3.5" /> Downloads
+                          </span>
+                        </th>
                         <th className="text-right px-4 py-3 font-semibold">Actions</th>
                       </tr>
                     </thead>
@@ -1051,6 +1140,7 @@ function Dashboard() {
                                 ? `S${r.season ?? "?"} · E${r.episode ?? "?"}`
                                 : "—"}
                             </td>
+                            <td className="px-4 py-3 font-semibold text-primary">{r.download_count ?? 0}</td>
                             <td className="px-4 py-3 text-right">
                               <div className="inline-flex gap-1">
                                 <button
@@ -1074,7 +1164,7 @@ function Dashboard() {
                       })}
                       {filtered.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">
+                          <td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">
                             No rows.
                           </td>
                         </tr>
@@ -1085,7 +1175,7 @@ function Dashboard() {
               </div>
             </section>
           </>
-        ) : (
+        ) : activeTab === "requests" ? (
           /* User Requests Tab */
           <section className="space-y-4">
             <h2 className="text-xl font-bold tracking-tight">
@@ -1148,6 +1238,139 @@ function Dashboard() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </section>
+        ) : (
+          /* Analytics Tab */
+          <section className="space-y-6">
+            <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-primary" /> Download Analytics
+            </h2>
+
+            {analyticsLoading && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading analytics…
+              </p>
+            )}
+
+            {/* Stat cards */}
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <div className="flex items-center gap-2 text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                  <Download className="w-4 h-4" /> All-Time Downloads
+                </div>
+                <p className="text-3xl font-extrabold mt-2">{analytics.totalAllTime.toLocaleString()}</p>
+              </div>
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <div className="flex items-center gap-2 text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                  <Flame className="w-4 h-4 text-amber-500" /> Downloads Today
+                </div>
+                <p className="text-3xl font-extrabold mt-2">{analytics.todayTotal.toLocaleString()}</p>
+              </div>
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <div className="flex items-center gap-2 text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                  <TrendingUp className="w-4 h-4 text-emerald-500" /> Last 7 Days
+                </div>
+                <p className="text-3xl font-extrabold mt-2">{analytics.weekTotal.toLocaleString()}</p>
+              </div>
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <div className="flex items-center gap-2 text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                  <Subtitles className="w-4 h-4" /> Tracked Titles
+                </div>
+                <p className="text-3xl font-extrabold mt-2">{(rows ?? []).length.toLocaleString()}</p>
+              </div>
+            </div>
+
+            {/* Trending today */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2">
+                <Flame className="w-4 h-4 text-amber-500" /> Trending Today
+              </h3>
+              <div className="rounded-2xl border border-border overflow-hidden bg-card/40">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-4 py-3 text-left">#</th>
+                        <th className="px-4 py-3 text-left">Title</th>
+                        <th className="px-4 py-3 text-left">Downloads Today</th>
+                        <th className="px-4 py-3 text-left"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {analytics.trendingToday.map((x, i) => (
+                        <tr key={x.row!.id} className="hover:bg-muted/20 transition">
+                          <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
+                          <td className="px-4 py-3 font-medium max-w-xs truncate">{x.row!.title}</td>
+                          <td className="px-4 py-3 font-semibold text-primary">{x.count}</td>
+                          <td className="px-4 py-3">
+                            <Link
+                              to="/content/$id"
+                              params={{ id: String(x.row!.id) }}
+                              className="text-xs text-muted-foreground hover:text-foreground underline"
+                            >
+                              View
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                      {analytics.trendingToday.length === 0 && !analyticsLoading && (
+                        <tr>
+                          <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                            No downloads logged yet today.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* All-time top downloads */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2">
+                <TrendingUp className="w-4 h-4" /> All-Time Top Downloads
+              </h3>
+              <div className="rounded-2xl border border-border overflow-hidden bg-card/40">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-4 py-3 text-left">#</th>
+                        <th className="px-4 py-3 text-left">Title</th>
+                        <th className="px-4 py-3 text-left">Total Downloads</th>
+                        <th className="px-4 py-3 text-left"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {analytics.topAllTime.map((r, i) => (
+                        <tr key={r.id} className="hover:bg-muted/20 transition">
+                          <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
+                          <td className="px-4 py-3 font-medium max-w-xs truncate">{r.title}</td>
+                          <td className="px-4 py-3 font-semibold text-primary">{r.download_count ?? 0}</td>
+                          <td className="px-4 py-3">
+                            <Link
+                              to="/content/$id"
+                              params={{ id: String(r.id) }}
+                              className="text-xs text-muted-foreground hover:text-foreground underline"
+                            >
+                              View
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                      {analytics.topAllTime.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                            No downloads recorded yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </section>

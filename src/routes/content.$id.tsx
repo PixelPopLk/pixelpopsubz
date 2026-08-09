@@ -32,8 +32,142 @@ import { DownloadButton } from "@/components/DownloadCountdown";
 // 🟢 Canonical links සෑදීම සඳහා Base URL එක මෙතැනින් ලබා දෙනවා
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
+// 🟢 SSR data loader — this runs on the SERVER before the page is sent to the
+// browser (or to Googlebot). Because the real content is already fetched here,
+// the very first HTML response contains the full movie/series details instead
+// of a loading skeleton, which is essential for search engine indexing.
+async function fetchContentData(id: string): Promise<Subtitle[]> {
+  const { data: targetItem, error: firstError } = await supabase
+    .from(SUBTITLES_TABLE)
+    .select("*")
+    .eq("id", Number(id) as any)
+    .maybeSingle();
+
+  if (firstError) throw firstError;
+  if (!targetItem) return [] as Subtitle[];
+
+  const isSeries = (() => {
+    const sNum = targetItem.season;
+    const eNum = targetItem.episode;
+    if (sNum != null && eNum != null) return true;
+
+    const g = (targetItem.genre ?? "").toLowerCase();
+    const genresList = g.split(/[,/|]/).map((x) => x.trim());
+    if (genresList.includes("movie")) return false;
+
+    const parsed = parseTitle(targetItem.title ?? "");
+    return parsed.episode != null;
+  })();
+
+  if (isSeries) {
+    const parsed = parseTitle(targetItem.title ?? "");
+    const { data: allEpisodes, error: secondError } = await supabase
+      .from(SUBTITLES_TABLE)
+      .select("*")
+      .ilike("title", `${parsed.showName}%`)
+      .order("created_at", { ascending: false });
+
+    if (secondError) throw secondError;
+    return (allEpisodes ?? []) as Subtitle[];
+  }
+
+  return [targetItem] as Subtitle[];
+}
+
+function findItem(data: Subtitle[], id: string): GridItem | null {
+  const items = buildGridItems(data);
+  const direct = items.find((it) => String(it.id) === id);
+  if (direct) return direct;
+  for (const it of items) {
+    if (it.kind === "series" && it.episodes.some((e) => String(e.id) === id)) return it;
+  }
+  return null;
+}
+
+// 🟢 head() also runs on the server, using the data the loader already fetched,
+// so crawlers get the real per-page <title>, description, canonical link and
+// Open Graph tags on the FIRST response — not injected later by client JS.
+function buildContentHead({ loaderData, params }: { loaderData?: Subtitle[]; params: { id: string } }) {
+  const item = findItem(loaderData ?? [], params.id);
+
+  if (!item) {
+    return { meta: [{ title: "Subtitle — PixelPopLK" }, { name: "robots", content: "noindex" }] };
+  }
+
+  if (item.kind === "movie") {
+    const s = item.sub;
+    const year = s.year != null && s.year !== "" ? String(s.year) : new Date(s.created_at).getFullYear().toString();
+    const titleText = `${s.title} (${year}) Sinhala Subtitle | Download Movie Subtitles | PixelPopLK`;
+    const descText = s.description
+      ? s.description.slice(0, 160)
+      : `Download Sinhala subtitles for ${s.title} (${year}). High-quality Sinhala sub file synced for official release. Fast & secure on PixelPopLK.`;
+    const customMeta = (s as any).metatags;
+    const keywordText = customMeta
+      ? `${s.title} Sinhala Subtitle, ${customMeta}`
+      : `${s.title} Sinhala Subtitle, Download ${s.title} Subtitle, PixelPopLK, Sinhala Subtitles, Movie Subtitles`;
+    const canonicalUrl = `${BASE_URL}/content/${s.id}`;
+
+    return {
+      meta: [
+        { title: titleText },
+        { name: "description", content: descText },
+        { name: "keywords", content: keywordText },
+        { name: "robots", content: "index, follow" },
+        { property: "og:title", content: titleText },
+        { property: "og:description", content: descText },
+        { property: "og:type", content: "video.movie" },
+        { property: "og:url", content: canonicalUrl },
+        ...(s.image_url ? [{ property: "og:image", content: s.image_url }] : []),
+        { name: "twitter:card", content: "summary_large_image" },
+        { name: "twitter:title", content: titleText },
+        { name: "twitter:description", content: descText },
+        ...(s.image_url ? [{ name: "twitter:image", content: s.image_url }] : []),
+      ],
+      links: [{ rel: "canonical", href: canonicalUrl }],
+    };
+  }
+
+  // TV series hub page
+  const s1e1 = item.episodes.find((e) => e.season === 1 && e.episode === 1) || item.episodes[0];
+  const withYear = item.episodes.find((e) => e.year != null && e.year !== "") ?? item.episodes[0];
+  const year =
+    withYear?.year != null && withYear.year !== ""
+      ? String(withYear.year)
+      : new Date(item.latestDate).getFullYear().toString();
+  const description = s1e1?.description ?? null;
+  const titleText = `${item.showName} Sinhala Subtitles | TV Series Download | PixelPopLK`;
+  const descText = description
+    ? description.slice(0, 160)
+    : `Download Sinhala subtitles for TV Series ${item.showName} (${year}). Latest seasons and episodes available on PixelPopLK.`;
+  const customMeta = item.episodes.map((e) => (e as any).metatags).find(Boolean);
+  const keywordText = customMeta
+    ? `${item.showName} Sinhala Subtitles, ${customMeta}`
+    : `${item.showName} Sinhala Subtitles, Sinhala Subitiles TV Series, ${item.showName} Sinhala Subitiles TV Series, PixelPopLK`;
+  const canonicalUrl = `${BASE_URL}/content/${item.id}`;
+
+  return {
+    meta: [
+      { title: titleText },
+      { name: "description", content: descText },
+      { name: "keywords", content: keywordText },
+      { name: "robots", content: "index, follow" },
+      { property: "og:title", content: titleText },
+      { property: "og:description", content: descText },
+      { property: "og:type", content: "video.tv_show" },
+      { property: "og:url", content: canonicalUrl },
+      ...(item.poster ? [{ property: "og:image", content: item.poster }] : []),
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: titleText },
+      { name: "twitter:description", content: descText },
+      ...(item.poster ? [{ name: "twitter:image", content: item.poster }] : []),
+    ],
+    links: [{ rel: "canonical", href: canonicalUrl }],
+  };
+}
+
 export const Route = createFileRoute("/content/$id")({
-  head: () => ({ meta: [{ title: "Subtitle — PixelPopLK" }] }),
+  loader: async ({ params: { id } }) => fetchContentData(id),
+  head: buildContentHead,
   component: ContentPage,
   errorComponent: ({ error }) => (
     <div className="min-h-screen grid place-items-center p-6 text-center">
@@ -54,47 +188,11 @@ export const Route = createFileRoute("/content/$id")({
 
 function ContentPage() {
   const { id } = Route.useParams();
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["subtitles", id],
-    queryFn: async () => {
-      const { data: targetItem, error: firstError } = await supabase
-        .from(SUBTITLES_TABLE)
-        .select("*")
-        .eq("id", Number(id) as any)
-        .maybeSingle();
-
-      if (firstError) throw firstError;
-      if (!targetItem) return [] as Subtitle[];
-
-      const isSeries = (() => {
-        const sNum = targetItem.season;
-        const eNum = targetItem.episode;
-        if (sNum != null && eNum != null) return true;
-        
-        const g = (targetItem.genre ?? "").toLowerCase();
-        const genresList = g.split(/[,/|]/).map((x) => x.trim());
-        if (genresList.includes("movie")) return false;
-        
-        const parsed = parseTitle(targetItem.title ?? "");
-        return parsed.episode != null;
-      })();
-
-          if (isSeries) {
-            const parsed = parseTitle(targetItem.title ?? "");
-            const { data: allEpisodes, error: secondError } = await supabase
-              .from(SUBTITLES_TABLE)
-              .select("*")
-              .ilike("title", `${parsed.showName}%`)
-              .order("created_at", { ascending: false });
-
-            if (secondError) throw secondError;
-            return (allEpisodes ?? []) as Subtitle[];
-          }
-
-          return [targetItem] as Subtitle[];
-        },
-      });
+  // 🟢 Data was already fetched on the server by the loader above, so it's
+  // present immediately — no client-side fetch/loading flash, and it's what
+  // search engines see in the raw HTML too.
+  const data = Route.useLoaderData();
+  const isLoading = false;
 
   const item = useMemo<GridItem | null>(() => {
     if (!data) return null;
@@ -242,59 +340,6 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
   const year = s.year != null && s.year !== "" ? String(s.year) : new Date(s.created_at).getFullYear().toString();
   const genres = splitGenres(s.genre);
 
-  const titleText = `${s.title} (${year}) Sinhala Subtitle | Download Movie Subtitles | PixelPopLK`;
-  const descText = s.description 
-    ? s.description.slice(0, 160)
-    : `Download Sinhala subtitles for ${s.title} (${year}). High-quality Sinhala sub file synced for official release. Fast & secure on PixelPopLK.`;
-  
-  const customMeta = (s as any).metatags;
-  const keywordText = customMeta 
-    ? `${s.title} Sinhala Subtitle, ${customMeta}`
-    : `${s.title} Sinhala Subtitle, Download ${s.title} Subtitle, PixelPopLK, Sinhala Subtitles, Movie Subtitles`;
-
-  useEffect(() => {
-    document.title = titleText;
-    const updateMeta = (nameOrProperty: string, content: string, isProperty = false) => {
-      const selector = isProperty 
-        ? `meta[property="${nameOrProperty}"]` 
-        : `meta[name="${nameOrProperty}"]`;
-      let element = document.querySelector(selector);
-      if (!element) {
-        element = document.createElement("meta");
-        if (isProperty) element.setAttribute("property", nameOrProperty);
-        else element.setAttribute("name", nameOrProperty);
-        document.head.appendChild(element);
-      }
-      element.setAttribute("content", content);
-    };
-
-    // 🟢 Canonical Tag එක update කරන කේතය
-    const updateCanonical = (href: string) => {
-      let element = document.querySelector('link[rel="canonical"]');
-      if (!element) {
-        element = document.createElement("link");
-        element.setAttribute("rel", "canonical");
-        document.head.appendChild(element);
-      }
-      element.setAttribute("href", href);
-    };
-
-    updateMeta("description", descText);
-    updateMeta("keywords", keywordText);
-    updateMeta("robots", "index, follow");
-    
-    // 🟢 Canonical Tag එක ඇතුළත් කිරීම
-    updateCanonical(`${BASE_URL}/content/${s.id}`);
-
-    updateMeta("og:title", titleText, true);
-    updateMeta("og:description", descText, true);
-    updateMeta("og:type", "video.movie", true);
-    if (s.image_url) updateMeta("og:image", s.image_url, true);
-    updateMeta("twitter:title", titleText);
-    updateMeta("twitter:description", descText);
-    if (s.image_url) updateMeta("twitter:image", s.image_url);
-  }, [s, year, titleText, descText, keywordText]);
-
   const movieSchema = {
     "@context": "https://schema.org",
     "@type": "Movie",
@@ -328,9 +373,14 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
       />
       
       <div className="mt-7 flex flex-col sm:flex-row gap-3 min-w-0">
-        <DownloadButton downloadLink={s.download_link} label="Direct Download (.srt)" />
+        <DownloadButton downloadLink={s.download_link} subtitleId={s.id} label="Direct Download (.srt)" />
         {(s as any).telegram_link && (
-          <DownloadButton downloadLink={(s as any).telegram_link} label="Telegram Download" variant="telegram" />
+          <DownloadButton
+            downloadLink={(s as any).telegram_link}
+            subtitleId={s.id}
+            label="Telegram Download"
+            variant="telegram"
+          />
         )}
       </div>
       
@@ -372,63 +422,6 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
     () => item.episodes.filter((e) => e.season === season).sort((a, b) => a.episode - b.episode),
     [item, season],
   );
-
-  const titleText = `${item.showName} Sinhala Subtitles | TV Series Download | PixelPopLK`;
-  const descText = meta.description 
-    ? meta.description.slice(0, 160)
-    : `Download Sinhala subtitles for TV Series ${item.showName} (${meta.year}). Latest seasons and episodes available on PixelPopLK.`;
-  
-  const customMeta = useMemo(() => {
-    const metas = item.episodes.map(e => (e as any).metatags).filter(Boolean);
-    return metas.length > 0 ? metas[0] : null;
-  }, [item]);
-
-  const keywordText = customMeta
-    ? `${item.showName} Sinhala Subtitles, ${customMeta}`
-    : `${item.showName} Sinhala Subtitles, Sinhala Subitiles TV Series, ${item.showName} Sinhala Subitiles TV Series, PixelPopLK`;
-
-  useEffect(() => {
-    document.title = titleText;
-    const updateMeta = (nameOrProperty: string, content: string, isProperty = false) => {
-      const selector = isProperty 
-        ? `meta[property="${nameOrProperty}"]` 
-        : `meta[name="${nameOrProperty}"]`;
-      let element = document.querySelector(selector);
-      if (!element) {
-        element = document.createElement("meta");
-        if (isProperty) element.setAttribute("property", nameOrProperty);
-        else element.setAttribute("name", nameOrProperty);
-        document.head.appendChild(element);
-      }
-      element.setAttribute("content", content);
-    };
-
-    // 🟢 Canonical Tag එක හදන සහ update කරන කේතය
-    const updateCanonical = (href: string) => {
-      let element = document.querySelector('link[rel="canonical"]');
-      if (!element) {
-        element = document.createElement("link");
-        element.setAttribute("rel", "canonical");
-        document.head.appendChild(element);
-      }
-      element.setAttribute("href", href);
-    };
-
-    updateMeta("description", descText);
-    updateMeta("keywords", keywordText);
-    updateMeta("robots", "index, follow");
-    
-    // 🟢 Canonical Tag එක ඇතුළත් කිරීම
-    updateCanonical(`${BASE_URL}/content/${item.id}`);
-
-    updateMeta("og:title", titleText, true);
-    updateMeta("og:description", descText, true);
-    updateMeta("og:type", "video.tv_show", true);
-    if (item.poster) updateMeta("og:image", item.poster, true);
-    updateMeta("twitter:title", titleText);
-    updateMeta("twitter:description", descText);
-    if (item.poster) updateMeta("twitter:image", item.poster);
-  }, [item, titleText, descText, keywordText]);
 
   const seriesSchema = {
     "@context": "https://schema.org",

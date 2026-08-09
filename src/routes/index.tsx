@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -38,8 +37,25 @@ const homeSearchSchema = z.object({
   q: z.string().optional().catch(undefined),
 });
 
+// 🟢 Shared fetch used by both the SSR loader and (for cache-key parity) any
+// future client refetch. Fetches the full subtitle catalog.
+async function fetchAllSubtitles(): Promise<Subtitle[]> {
+  const { data, error } = await supabase
+    .from(SUBTITLES_TABLE)
+    .select(SUBTITLE_COLUMNS)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as Subtitle[];
+}
+
 export const Route = createFileRoute("/")({
   validateSearch: (search) => homeSearchSchema.parse(search),
+  // 🟢 SSR loader — fetches the full catalog on the server so the homepage
+  // grid (and every /content/:id link on it) is present in the very first
+  // HTML response. This is what lets Google discover and crawl content pages
+  // immediately instead of waiting on a slower client-side JS render pass.
+  loader: async () => fetchAllSubtitles(),
   head: () => ({
     meta: [
       { title: "PixelPopLK — Sinhala Subtitles for Movies & TV Series" },
@@ -56,6 +72,7 @@ export const Route = createFileRoute("/")({
       { name: "twitter:title", content: "PixelPopLK — Sinhala Subtitles for Movies & TV Series" },
       { name: "twitter:description", content: "Download the latest premium Sinhala subtitles for movies and TV series. Curated, fast, and secure on PixelPopLK." },
     ],
+    links: [{ rel: "canonical", href: "https://pixelpoplk.pages.dev/" }],
   }),
   component: HomePage,
   errorComponent: ({ error }) => (
@@ -191,17 +208,11 @@ function HomePage() {
     });
   };
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["subtitles"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from(SUBTITLES_TABLE)
-        .select(SUBTITLE_COLUMNS)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Subtitle[];
-    },
-  });
+  // 🟢 Already fetched server-side by the loader above — present immediately
+  // on first paint, and it's exactly what search engines see in the raw HTML.
+  const data = Route.useLoaderData();
+  const isLoading = false;
+  const error: Error | null = null;
 
   const items = useMemo(() => buildGridItems(data ?? []), [data]);
   const featured = useMemo(() => items.slice(0, 6), [items]);

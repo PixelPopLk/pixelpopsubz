@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Calendar, Download, PlayCircle, Star, Subtitles, Tv } from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
@@ -16,8 +15,82 @@ import { Navbar } from "@/components/Navbar";
 import AdBanner from "@/components/AdBanner"; 
 import { DownloadButton } from "@/components/DownloadCountdown";
 
+const BASE_URL = "https://pixelpoplk.pages.dev";
+
+// 🟢 SSR data loader — runs on the server so the real episode data is already
+// present in the very first HTML response (crawlers never see a blank shell).
+async function fetchEpisodeData(id: string): Promise<Subtitle[]> {
+  const { data: targetItem, error: firstError } = await supabase
+    .from(SUBTITLES_TABLE)
+    .select("*")
+    .eq("id", Number(id) as any)
+    .maybeSingle();
+
+  if (firstError) throw firstError;
+  if (!targetItem) return [] as Subtitle[];
+
+  const parsed = parseTitle(targetItem.title ?? "");
+  const { data: allEpisodes, error: secondError } = await supabase
+    .from(SUBTITLES_TABLE)
+    .select("*")
+    .ilike("title", `${parsed.showName}%`)
+    .order("created_at", { ascending: false });
+
+  if (secondError) throw secondError;
+  return (allEpisodes ?? []) as Subtitle[];
+}
+
+function findEpisode(data: Subtitle[], id: string) {
+  const items = buildGridItems(data);
+  for (const it of items) {
+    if (it.kind === "series") {
+      const ep = it.episodes.find((e) => String(e.id) === id);
+      if (ep) return { series: it, ep };
+    }
+  }
+  return null;
+}
+
+// 🟢 head() runs server-side using the loader's data, so every episode gets its
+// own unique, crawlable title / description / canonical / Open Graph tags.
+function buildEpisodeHead({ loaderData, params }: { loaderData?: Subtitle[]; params: { id: string } }) {
+  const found = findEpisode(loaderData ?? [], params.id);
+
+  if (!found) {
+    return { meta: [{ title: "Episode — PixelPopLK" }, { name: "robots", content: "noindex" }] };
+  }
+
+  const { series, ep } = found;
+  const poster = ep.image_url || series.poster || "";
+  const episodeTitle = ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`;
+  const titleText = `${series.showName} S${String(ep.season).padStart(2, "0")}E${String(ep.episode).padStart(2, "0")} Sinhala Subtitle | ${episodeTitle} | PixelPopLK`;
+  const descText = `Download Sinhala subtitle for ${series.showName} S${ep.season}E${ep.episode} (${episodeTitle}). High-quality Sinhala sub file synced on PixelPopLK.`;
+  const keywordText = `${series.showName} S${ep.season}E${ep.episode} Sinhala Subtitle, ${series.showName} Season ${ep.season} Episode ${ep.episode} Sinhala Subtitle, Sinhala Subitiles TV Series, PixelPopLK, Sinhala Subtitles`;
+  const canonicalUrl = `${BASE_URL}/episode/${ep.id}`;
+
+  return {
+    meta: [
+      { title: titleText },
+      { name: "description", content: descText },
+      { name: "keywords", content: keywordText },
+      { name: "robots", content: "index, follow" },
+      { property: "og:title", content: titleText },
+      { property: "og:description", content: descText },
+      { property: "og:type", content: "video.episode" },
+      { property: "og:url", content: canonicalUrl },
+      ...(poster ? [{ property: "og:image", content: poster }] : []),
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: titleText },
+      { name: "twitter:description", content: descText },
+      ...(poster ? [{ name: "twitter:image", content: poster }] : []),
+    ],
+    links: [{ rel: "canonical", href: canonicalUrl }],
+  };
+}
+
 export const Route = createFileRoute("/episode/$id")({
-  head: () => ({ meta: [{ title: "Episode — PixelPopLK" }] }),
+  loader: async ({ params: { id } }) => fetchEpisodeData(id),
+  head: buildEpisodeHead,
   component: EpisodePage,
   errorComponent: ({ error }) => (
     <div className="min-h-screen grid place-items-center p-6 text-center">
@@ -38,30 +111,10 @@ export const Route = createFileRoute("/episode/$id")({
 
 function EpisodePage() {
   const { id } = Route.useParams();
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["subtitles", id],
-    queryFn: async () => {
-      const { data: targetItem, error: firstError } = await supabase
-        .from(SUBTITLES_TABLE)
-        .select("*")
-        .eq("id", Number(id) as any)
-        .maybeSingle();
-
-      if (firstError) throw firstError;
-      if (!targetItem) return [] as Subtitle[];
-
-      const parsed = parseTitle(targetItem.title ?? "");
-      const { data: allEpisodes, error: secondError } = await supabase
-        .from(SUBTITLES_TABLE)
-        .select("*")
-        .ilike("title", `${parsed.showName}%`) 
-        .order("created_at", { ascending: false });
-
-      if (secondError) throw secondError;
-      return (allEpisodes ?? []) as Subtitle[];
-    },
-  });
+  // 🟢 Already fetched server-side by the loader — present immediately, and
+  // it's exactly what search engines see in the raw HTML response.
+  const data = Route.useLoaderData();
+  const isLoading = false;
 
   const found = useMemo(() => {
     if (!data) return null;
@@ -89,48 +142,6 @@ function EpisodePage() {
 
   const poster = ep?.image_url || series?.poster || "";
   const episodeTitle = ep ? (ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`) : "";
-
-  const titleText = series && ep
-    ? `${series.showName} S${String(ep.season).padStart(2, "0")}E${String(ep.episode).padStart(2, "0")} Sinhala Subtitle | ${episodeTitle} | PixelPopLK`
-    : "Episode — PixelPopLK";
-  
-  const descText = series && ep
-    ? `Download Sinhala subtitle for ${series.showName} S${ep.season}E${ep.episode} (${episodeTitle}). High-quality Sinhala sub file synced on PixelPopLK.`
-    : "";
-  
-  const keywordText = series && ep
-    ? `${series.showName} S${ep.season}E${ep.episode} Sinhala Subtitle, ${series.showName} Season ${ep.season} Episode ${ep.episode} Sinhala Subtitle, Sinhala Subitiles TV Series, PixelPopLK, Sinhala Subtitles`
-    : "";
-
-  useEffect(() => {
-    if (!series || !ep) return;
-
-    document.title = titleText;
-    const updateMeta = (nameOrProperty: string, content: string, isProperty = false) => {
-      const selector = isProperty 
-        ? `meta[property="${nameOrProperty}"]` 
-        : `meta[name="${nameOrProperty}"]`;
-      let element = document.querySelector(selector);
-      if (!element) {
-        element = document.createElement("meta");
-        if (isProperty) element.setAttribute("property", nameOrProperty);
-        else element.setAttribute("name", nameOrProperty);
-        document.head.appendChild(element);
-      }
-      element.setAttribute("content", content);
-    };
-
-    updateMeta("description", descText);
-    updateMeta("keywords", keywordText);
-    updateMeta("robots", "index, follow");
-    updateMeta("og:title", titleText, true);
-    updateMeta("og:description", descText, true);
-    updateMeta("og:type", "video.episode", true);
-    if (poster) updateMeta("og:image", poster, true);
-    updateMeta("twitter:title", titleText);
-    updateMeta("twitter:description", descText);
-    if (poster) updateMeta("twitter:image", poster);
-  }, [series, ep, poster, titleText, descText, keywordText]);
 
   const episodeSchema = series && ep ? {
     "@context": "https://schema.org",
@@ -257,9 +268,14 @@ function EpisodePage() {
 
                 {/* Download Buttons Section */}
                 <div className="mt-7 flex flex-col sm:flex-row gap-3">
-                  <DownloadButton downloadLink={ep.download_link} label="Direct Download (.srt)" />
+                  <DownloadButton downloadLink={ep.download_link} subtitleId={ep.id} label="Direct Download (.srt)" />
                   {(ep as any).telegram_link && (
-                    <DownloadButton downloadLink={(ep as any).telegram_link} label="Telegram Download" variant="telegram" />
+                    <DownloadButton
+                      downloadLink={(ep as any).telegram_link}
+                      subtitleId={ep.id}
+                      label="Telegram Download"
+                      variant="telegram"
+                    />
                   )}
                 </div>
                 
