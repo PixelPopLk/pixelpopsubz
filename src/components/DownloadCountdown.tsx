@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
+import { logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://omg10.com/4/11488174";
 const ADSTERRA_URL = "https://www.effectivecpmnetwork.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
@@ -23,12 +24,16 @@ export function isSafeUrl(url: string | null | undefined): boolean {
 
 interface DownloadCountdownModalProps {
   downloadLink: string;
+  subtitleId?: string | number;
+  variant?: string;
   onClose: () => void;
   onUnlockSuccess: () => void;
 }
 
 export function DownloadCountdownModal({
   downloadLink,
+  subtitleId,
+  variant = "direct",
   onClose,
   onUnlockSuccess,
 }: DownloadCountdownModalProps) {
@@ -282,6 +287,7 @@ export function DownloadCountdownModal({
                         e.preventDefault();
                         alert("Invalid or unsafe download link detected.");
                       } else {
+                        logDownload(subtitleId, variant);
                         onClose();
                       }
                     }}
@@ -379,11 +385,13 @@ export function DownloadCountdownModal({
 
 export function DownloadButton({
   downloadLink,
+  subtitleId,
   label = "Download Subtitle",
   className,
   variant = "primary",
 }: {
   downloadLink: string;
+  subtitleId?: string | number;
   label?: string;
   className?: string;
   variant?: "primary" | "telegram";
@@ -411,6 +419,7 @@ export function DownloadButton({
         } catch {
           /* noop */
         }
+        logDownload(subtitleId, variant);
       } else {
         alert("Invalid or unsafe download link detected.");
       }
@@ -449,6 +458,8 @@ export function DownloadButton({
       {showModal && (
         <DownloadCountdownModal
           downloadLink={downloadLink}
+          subtitleId={subtitleId}
+          variant={variant}
           onClose={() => setShowModal(false)}
           onUnlockSuccess={handleUnlockSuccess}
         />
