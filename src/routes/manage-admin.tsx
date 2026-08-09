@@ -3,6 +3,17 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from "recharts";
+import {
   Subtitles,
   Plus,
   Loader2,
@@ -24,7 +35,7 @@ import {
   Flame,
 } from "lucide-react";
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
-import { splitGenres, genreBadgeClass } from "@/lib/subtitles";
+import { splitGenres, genreBadgeClass, buildGridItems } from "@/lib/subtitles";
 
 export const Route = createFileRoute("/manage-admin")({
   head: () => ({
@@ -500,27 +511,45 @@ function Dashboard() {
     return (rows ?? []).filter((r) => r.title?.toLowerCase().includes(q));
   }, [rows, search]);
 
-  // 🟢 Download Analytics — derived stats for the Analytics tab
+  // 🟢 Download Analytics — derived stats for the Analytics tab.
+  // Episodes of the same TV series are grouped into one row (matching how the
+  // site itself groups them via buildGridItems), so "The Sopranos" appears
+  // ONCE with a combined count instead of once per episode row.
   const analytics = useMemo(() => {
     const allRows = rows ?? [];
     const events = downloadEvents ?? [];
+    const items = buildGridItems(allRows);
 
     const totalAllTime = allRows.reduce((sum, r) => sum + (Number(r.download_count) || 0), 0);
 
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const todayCounts = new Map<number, number>();
     const weekCounts = new Map<number, number>();
     let todayTotal = 0;
     let weekTotal = 0;
 
+    // Last 7 days, day-by-day, for the trend chart
+    const dayBuckets = new Map<string, number>();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - i);
+      dayBuckets.set(d.toISOString().split("T")[0], 0);
+    }
+
     for (const ev of events) {
       const t = new Date(ev.downloaded_at);
       if (t >= sevenDaysAgo) {
         weekTotal += 1;
         weekCounts.set(ev.subtitle_id, (weekCounts.get(ev.subtitle_id) ?? 0) + 1);
+        const dayKey = new Date(t);
+        dayKey.setHours(0, 0, 0, 0);
+        const key = dayKey.toISOString().split("T")[0];
+        if (dayBuckets.has(key)) dayBuckets.set(key, (dayBuckets.get(key) ?? 0) + 1);
       }
       if (t >= startOfToday) {
         todayTotal += 1;
@@ -528,25 +557,52 @@ function Dashboard() {
       }
     }
 
-    const rowById = new Map(allRows.map((r) => [Number(r.id), r]));
+    const dailyChartData = Array.from(dayBuckets.entries()).map(([date, count]) => ({
+      date: new Date(date).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+      downloads: count,
+    }));
 
-    const trendingToday = Array.from(todayCounts.entries())
-      .map(([id, count]) => ({ row: rowById.get(id), count }))
-      .filter((x) => x.row)
-      .sort((a, b) => b.count - a.count)
+    // One stat row per movie/series — series episodes are summed together.
+    const itemStats = items.map((it) => {
+      if (it.kind === "movie") {
+        const id = Number(it.sub.id);
+        return {
+          key: it.key,
+          title: it.sub.title,
+          linkId: it.sub.id,
+          episodeCount: null as number | null,
+          allTime: Number(it.sub.download_count) || 0,
+          today: todayCounts.get(id) ?? 0,
+          week: weekCounts.get(id) ?? 0,
+        };
+      }
+      const allTime = it.episodes.reduce((s, e) => s + (Number(e.download_count) || 0), 0);
+      const today = it.episodes.reduce((s, e) => s + (todayCounts.get(Number(e.id)) ?? 0), 0);
+      const week = it.episodes.reduce((s, e) => s + (weekCounts.get(Number(e.id)) ?? 0), 0);
+      return {
+        key: it.key,
+        title: it.showName,
+        linkId: it.id,
+        episodeCount: it.episodes.length,
+        allTime,
+        today,
+        week,
+      };
+    });
+
+    const trendingToday = itemStats
+      .filter((x) => x.today > 0)
+      .sort((a, b) => b.today - a.today)
       .slice(0, 10);
 
-    const trendingWeek = Array.from(weekCounts.entries())
-      .map(([id, count]) => ({ row: rowById.get(id), count }))
-      .filter((x) => x.row)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
+    const topAllTime = [...itemStats].sort((a, b) => b.allTime - a.allTime).slice(0, 10);
+    const topShowsChart = [...itemStats]
+      .filter((x) => x.allTime > 0)
+      .sort((a, b) => b.allTime - a.allTime)
+      .slice(0, 8)
+      .map((x) => ({ name: x.title.length > 18 ? `${x.title.slice(0, 18)}…` : x.title, downloads: x.allTime }));
 
-    const topAllTime = [...allRows]
-      .sort((a, b) => (Number(b.download_count) || 0) - (Number(a.download_count) || 0))
-      .slice(0, 10);
-
-    return { totalAllTime, todayTotal, weekTotal, trendingToday, trendingWeek, topAllTime };
+    return { totalAllTime, todayTotal, weekTotal, dailyChartData, trendingToday, topAllTime, topShowsChart };
   }, [rows, downloadEvents]);
 
   const editing = form.id !== null;
@@ -1282,7 +1338,79 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* Trending today */}
+            {/* Charts */}
+            <div className="grid lg:grid-cols-2 gap-4">
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2 mb-4">
+                  <TrendingUp className="w-4 h-4" /> Downloads — Last 7 Days
+                </h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={analytics.dailyChartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="oklch(1 0 0 / 0.08)" />
+                      <XAxis dataKey="date" tick={{ fill: "oklch(0.7 0 0)", fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fill: "oklch(0.7 0 0)", fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{
+                          background: "oklch(0.18 0.01 20)",
+                          border: "1px solid oklch(1 0 0 / 0.1)",
+                          borderRadius: 12,
+                          fontSize: 12,
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="downloads"
+                        stroke="oklch(0.62 0.24 25)"
+                        strokeWidth={2.5}
+                        dot={{ r: 3, fill: "oklch(0.62 0.24 25)" }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-card/40 p-5">
+                <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2 mb-4">
+                  <BarChart3 className="w-4 h-4" /> Top Titles (All-Time)
+                </h3>
+                <div className="h-64">
+                  {analytics.topShowsChart.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={analytics.topShowsChart}
+                        layout="vertical"
+                        margin={{ top: 5, right: 20, left: 0, bottom: 0 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(1 0 0 / 0.08)" horizontal={false} />
+                        <XAxis type="number" allowDecimals={false} tick={{ fill: "oklch(0.7 0 0)", fontSize: 11 }} />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          width={110}
+                          tick={{ fill: "oklch(0.85 0 0)", fontSize: 11 }}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "oklch(0.18 0.01 20)",
+                            border: "1px solid oklch(1 0 0 / 0.1)",
+                            borderRadius: 12,
+                            fontSize: 12,
+                          }}
+                        />
+                        <Bar dataKey="downloads" fill="oklch(0.62 0.24 25)" radius={[0, 6, 6, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full grid place-items-center text-sm text-muted-foreground">
+                      No downloads recorded yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Trending today — series episodes are combined into one row */}
             <div className="space-y-3">
               <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2">
                 <Flame className="w-4 h-4 text-amber-500" /> Trending Today
@@ -1300,14 +1428,21 @@ function Dashboard() {
                     </thead>
                     <tbody className="divide-y divide-border">
                       {analytics.trendingToday.map((x, i) => (
-                        <tr key={x.row!.id} className="hover:bg-muted/20 transition">
+                        <tr key={x.key} className="hover:bg-muted/20 transition">
                           <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
-                          <td className="px-4 py-3 font-medium max-w-xs truncate">{x.row!.title}</td>
-                          <td className="px-4 py-3 font-semibold text-primary">{x.count}</td>
+                          <td className="px-4 py-3 font-medium max-w-xs truncate">
+                            {x.title}
+                            {x.episodeCount != null && (
+                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                                (TV Series — {x.episodeCount} ep tracked)
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-semibold text-primary">{x.today}</td>
                           <td className="px-4 py-3">
                             <Link
                               to="/content/$id"
-                              params={{ id: String(x.row!.id) }}
+                              params={{ id: String(x.linkId) }}
                               className="text-xs text-muted-foreground hover:text-foreground underline"
                             >
                               View
@@ -1328,7 +1463,7 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* All-time top downloads */}
+            {/* All-time top downloads — series episodes are combined into one row */}
             <div className="space-y-3">
               <h3 className="text-sm font-bold tracking-wide uppercase text-primary flex items-center gap-2">
                 <TrendingUp className="w-4 h-4" /> All-Time Top Downloads
@@ -1345,15 +1480,22 @@ function Dashboard() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {analytics.topAllTime.map((r, i) => (
-                        <tr key={r.id} className="hover:bg-muted/20 transition">
+                      {analytics.topAllTime.map((x, i) => (
+                        <tr key={x.key} className="hover:bg-muted/20 transition">
                           <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
-                          <td className="px-4 py-3 font-medium max-w-xs truncate">{r.title}</td>
-                          <td className="px-4 py-3 font-semibold text-primary">{r.download_count ?? 0}</td>
+                          <td className="px-4 py-3 font-medium max-w-xs truncate">
+                            {x.title}
+                            {x.episodeCount != null && (
+                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                                (TV Series — {x.episodeCount} ep tracked)
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-semibold text-primary">{x.allTime}</td>
                           <td className="px-4 py-3">
                             <Link
                               to="/content/$id"
-                              params={{ id: String(r.id) }}
+                              params={{ id: String(x.linkId) }}
                               className="text-xs text-muted-foreground hover:text-foreground underline"
                             >
                               View
