@@ -13,7 +13,7 @@ export default function AdBanner({
   width,
   height,
   type = "300x250",
-  delay = 300, // Popup එක Lag නොවී Instant Open වෙන්න 300ms Delay එකක්
+  delay = 150, // Popup එක Lag නොවී Instant Open වෙන්න 300ms Delay එකක්
 }: AdBannerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
