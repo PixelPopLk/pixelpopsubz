@@ -278,7 +278,17 @@ function Hero({
     <div className="relative overflow-hidden rounded-3xl border border-border shadow-card w-full">
       {poster && (
         <div className="pointer-events-none absolute inset-0 opacity-30">
-          <img src={poster} alt="" className="w-full h-full object-cover blur-3xl scale-110" />
+          {/* 🟢 blur-3xl (64px) on a full-size image was one of the heaviest
+              paint costs on this page. blur-lg (16px) still gives the same
+              soft-glow look at a fraction of the GPU cost. */}
+          <img
+            src={poster}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-cover blur-lg scale-110"
+          />
           <div className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/85 to-background" />
         </div>
       )}
@@ -286,7 +296,14 @@ function Hero({
         <div className="p-4 sm:p-6 md:p-8 md:pr-0 min-w-0">
           <div className="relative aspect-[2/3] rounded-2xl overflow-hidden border border-border shadow-card bg-muted max-w-[280px] sm:max-w-none mx-auto md:mx-0">
             {poster ? (
-              <img src={poster} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+              <img
+                src={poster}
+                alt={title}
+                // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute; React's types may lag behind
+                fetchPriority="high"
+                decoding="async"
+                className="absolute inset-0 w-full h-full object-cover"
+              />
             ) : (
               <div className="absolute inset-0 grid place-items-center text-muted-foreground">
                 <Film className="w-16 h-16" />

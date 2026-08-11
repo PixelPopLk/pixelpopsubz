@@ -30,6 +30,7 @@ import {
   type GridItem,
 } from "@/lib/subtitles";
 import { Navbar } from "@/components/Navbar";
+import AdBanner from "@/components/AdBanner";
 
 const homeSearchSchema = z.object({
   type: z.enum(["all", "movie", "series"]).optional().catch("all"),
@@ -237,6 +238,10 @@ function HomePage() {
     }
     return result;
   }, [items, query, type, genre, yearFilter, ratingFilter, sortFilter]);
+
+  // 🟢 Stable key that only changes when the actual filters change — used to
+  // reset each Row's "Load More" pagination back to page 1 on a new search/filter.
+  const rowResetKey = `${type}|${genre ?? ""}|${query}|${yearFilter}|${ratingFilter}|${sortFilter}`;
 
   const activeCategory = useMemo<Category>(() => {
     if (type === "all" && !genre) return "All";
@@ -492,6 +497,11 @@ function HomePage() {
 
         <FilterTabs active={activeCategory} onChange={handleCategoryChange} />
 
+        {/* 🟢 Homepage had zero ad placements despite being the highest-traffic
+            page — one banner here, above the results grid, is a real revenue
+            gap being filled without breaking up the browsing grid itself. */}
+        <AdBanner type="300x250" />
+
         {error && (
           <div className="mt-8 p-6 rounded-xl border border-destructive/30 bg-destructive/10 text-sm">
             Failed to load subtitles: {(error as Error).message}
@@ -508,7 +518,8 @@ function HomePage() {
             icon={<Search className="w-4 h-4" />} 
             items={filtered} 
             onDownload={handleDownloadClick} 
-            onDetails={handleDetailsClick} 
+            onDetails={handleDetailsClick}
+            resetKey={rowResetKey}
           />
         ) : (
           <div className="mt-8 space-y-12">
@@ -519,6 +530,7 @@ function HomePage() {
                 items={filtered.filter((it) => it.kind === "movie")}
                 onDownload={handleDownloadClick}
                 onDetails={handleDetailsClick}
+                resetKey={rowResetKey}
               />
             )}
             {type !== "movie" && (
@@ -528,6 +540,7 @@ function HomePage() {
                 items={filtered.filter((it) => it.kind === "series")}
                 onDownload={handleDownloadClick}
                 onDetails={handleDetailsClick}
+                resetKey={rowResetKey}
               />
             )}
           </div>
@@ -911,20 +924,35 @@ function FilterTabs({ active, onChange }: { active: Category; onChange: (c: Cate
   );
 }
 
+// 🟢 Rendering hundreds of animated cards at once (the whole catalog) was the
+// main cause of homepage lag — each card is its own framer-motion instance.
+// Rows now render a bounded page at a time with a "Load More" button.
+const ROW_PAGE_SIZE = 24;
+
 function Row({ 
   title, 
   icon, 
   items, 
   onDownload, 
-  onDetails 
+  onDetails,
+  resetKey,
 }: { 
   title: string; 
   icon?: React.ReactNode; 
   items: GridItem[]; 
   onDownload: (id: string) => void; 
   onDetails: (id: string) => void;
+  resetKey: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(ROW_PAGE_SIZE);
+
+  // Whenever the active filters/search change, start each row back at page 1
+  // (resetKey is a stable string, unlike `items` which is a new array every
+  // render, so this only fires on a real filter change — not every re-render).
+  useEffect(() => {
+    setVisibleCount(ROW_PAGE_SIZE);
+  }, [resetKey]);
 
   const scrollBy = (dir: 1 | -1) => {
     const el = scrollerRef.current;
@@ -934,6 +962,9 @@ function Row({
   };
 
   if (items.length === 0) return null;
+
+  const visibleItems = items.slice(0, visibleCount);
+  const hasMore = visibleCount < items.length;
 
   return (
     <div className="group/row relative">
@@ -966,12 +997,23 @@ function Row({
         <div className="pointer-events-none absolute inset-y-0 right-0 w-8 sm:w-12 bg-gradient-to-l from-background to-transparent z-10" />
 
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3.5 sm:gap-4 px-4 sm:px-6 lg:px-8 py-1">
-  {items.map((it, i) => (
+  {visibleItems.map((it, i) => (
     <div key={it.key}>
       <SubtitleCard item={it} index={i} onDownload={onDownload} onDetails={onDetails} />
     </div>
   ))}
 </div>
+
+        {hasMore && (
+          <div className="flex justify-center px-4 sm:px-6 lg:px-8 mt-5">
+            <button
+              onClick={() => setVisibleCount((c) => c + ROW_PAGE_SIZE)}
+              className="px-6 py-2.5 rounded-full border border-border bg-card/60 backdrop-blur text-sm font-semibold hover:bg-card hover:border-primary/40 transition"
+            >
+              Load More ({items.length - visibleCount} left)
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

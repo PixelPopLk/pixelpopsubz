@@ -13,7 +13,7 @@ export default function AdBanner({
   width,
   height,
   type = "300x250",
-  delay = 300, // Popup එක Lag නොවී Instant Open වෙන්න 300ms Delay එකක්
+  delay = 150, // Popup එක Lag නොවී Instant Open වෙන්න 300ms Delay එකක්
 }: AdBannerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
@@ -36,13 +36,41 @@ export default function AdBanner({
   const selectedWidth = width || adConfig[type]?.width || 300;
   const selectedHeight = height || adConfig[type]?.height || 250;
 
-  // 1. Popup එකේ Animation එක ඉවර වෙනකම් පොඩ්ඩක් ඉවසීම (Lag එක නැති කිරීමට)
+  // 🟢 Ads used to start loading (iframe + external script) a fixed 300ms
+  // after mount regardless of whether they were even visible yet — on pages
+  // with an ad further down the page, that's wasted network/CPU competing
+  // with the actual page content during the critical initial load. Now we
+  // wait until the ad slot is actually about to scroll into view.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsReady(true);
-    }, delay);
+    const el = containerRef.current;
+    if (!el) return;
 
-    return () => clearTimeout(timer);
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    if (typeof IntersectionObserver === "undefined") {
+      // Very old browsers without IntersectionObserver support — fall back
+      // to the old fixed-delay behavior instead of never loading the ad.
+      timerId = setTimeout(() => setIsReady(true), delay);
+      return () => {
+        if (timerId) clearTimeout(timerId);
+      };
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          timerId = setTimeout(() => setIsReady(true), delay);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "600px" }, // load well before it's actually visible — favors more counted impressions while still staying off the critical initial-paint path
+    );
+    observer.observe(el);
+
+    return () => {
+      observer.disconnect();
+      if (timerId) clearTimeout(timerId);
+    };
   }, [delay]);
 
   // 2. Ready වූ පසු Ad එක Load කිරීම

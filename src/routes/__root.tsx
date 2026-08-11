@@ -134,6 +134,12 @@ function RootShell({ children }: { children: ReactNode }) {
       <body>
         {children}
         <Scripts />
+
+        {/* 🟢 Adsterra Social Bar — one instance, site-wide (every page,
+            including the homepage which has no other ads). `async` so it
+            downloads without blocking page rendering; placed last in <body>
+            so it never competes with app/content scripts for priority. */}
+        <script async src="https://acorntar.com/f9/ab/d2/f9abd27b8744d3a0411d6b53882e464a.js" />
       </body>
     </html>
   );

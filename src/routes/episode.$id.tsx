@@ -196,7 +196,15 @@ function EpisodePage() {
           <div className="relative overflow-hidden rounded-3xl border border-border shadow-card">
             {poster && (
               <div className="pointer-events-none absolute inset-0 opacity-30">
-                <img src={poster} alt="" className="w-full h-full object-cover blur-3xl scale-110" />
+                {/* 🟢 blur-lg instead of blur-3xl — same soft-glow look, much cheaper to paint */}
+                <img
+                  src={poster}
+                  alt=""
+                  aria-hidden="true"
+                  loading="lazy"
+                  decoding="async"
+                  className="w-full h-full object-cover blur-lg scale-110"
+                />
                 <div className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/85 to-background" />
               </div>
             )}
@@ -204,7 +212,14 @@ function EpisodePage() {
               <div className="p-6 md:p-8 md:pr-0">
                 <div className="relative aspect-[2/3] rounded-2xl overflow-hidden border border-border shadow-card bg-muted">
                   {poster && (
-                    <img src={poster} alt={ep.title} className="absolute inset-0 w-full h-full object-cover" />
+                    <img
+                      src={poster}
+                      alt={ep.title}
+                      // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute; React's types may lag behind
+                      fetchPriority="high"
+                      decoding="async"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
                   )}
                 </div>
               </div>
