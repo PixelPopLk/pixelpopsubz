@@ -118,6 +118,11 @@ const websiteSchema = {
 };
 
 function RootShell({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  
+  // URL path එක "/manage-admin" වලින් ආරම්භ වේ දැයි පරීක්ෂා කිරීම
+  const isAdminPage = location.pathname.startsWith("/manage-admin");
+
   return (
     <html lang="en">
       <head>
@@ -135,11 +140,10 @@ function RootShell({ children }: { children: ReactNode }) {
         {children}
         <Scripts />
 
-        {/* 🟢 Adsterra Social Bar — one instance, site-wide (every page,
-            including the homepage which has no other ads). `async` so it
-            downloads without blocking page rendering; placed last in <body>
-            so it never competes with app/content scripts for priority. */}
-        <script async src="https://acorntar.com/f9/ab/d2/f9abd27b8744d3a0411d6b53882e464a.js" />
+        {/* 🟢 Adsterra Social Bar — load වන්නේ admin පිටුවල නොවේ නම් පමණි */}
+        {!isAdminPage && (
+          <script async src="https://acorntar.com/f9/ab/d2/f9abd27b8744d3a0411d6b53882e464a.js" />
+        )}
       </body>
     </html>
   );
@@ -147,7 +151,6 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const location = useLocation();
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -158,4 +161,4 @@ function RootComponent() {
       <Outlet />
     </QueryClientProvider>
   );
-                                    }
+      }
