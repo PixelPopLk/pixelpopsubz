@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
+import { Download, Lock, CheckCircle, X, ExternalLink } from "lucide-react";
 import { logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://omg10.com/4/11488174";
@@ -37,13 +37,10 @@ export function DownloadCountdownModal({
   onClose,
   onUnlockSuccess,
 }: DownloadCountdownModalProps) {
-  const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
+  // warning state එක ඉවත් කර ඇත
+  const [status, setStatus] = useState<"idle" | "verifying" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
-
-  const blurTimeRef = useRef<number | null>(null);
-  const accumulatedTimeRef = useRef<number>(0);
-  const timerRef = useRef<any>(null);
-  const isPageVisibleRef = useRef<boolean>(true);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (status !== "verifying") {
@@ -51,95 +48,23 @@ export function DownloadCountdownModal({
       return;
     }
 
-    const isVisible = document.visibilityState === "visible";
-    isPageVisibleRef.current = isVisible;
-    if (!isVisible) {
-      blurTimeRef.current = Date.now();
-    } else {
-      blurTimeRef.current = null;
-    }
+    setSecondsLeft(COUNTDOWN_SECONDS);
 
-    const updateTimer = () => {
-      const now = Date.now();
-      let currentSessionTime = 0;
-      if (blurTimeRef.current !== null) {
-        currentSessionTime = now - blurTimeRef.current;
-      }
-      const totalMs = accumulatedTimeRef.current + currentSessionTime;
-      const remainingSeconds = Math.max(0, COUNTDOWN_SECONDS - Math.floor(totalMs / 1000));
-      setSecondsLeft(remainingSeconds);
-
-      if (totalMs >= COUNTDOWN_SECONDS * 1000) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        setStatus("completed");
-        onUnlockSuccess();
-      }
-    };
-
-    timerRef.current = setInterval(updateTimer, 100);
-
-    const handleVisibilityChange = () => {
-      const isVisible = document.visibilityState === "visible";
-      const now = Date.now();
-
-      if (isVisible) {
-        isPageVisibleRef.current = true;
-        if (blurTimeRef.current !== null) {
-          accumulatedTimeRef.current += now - blurTimeRef.current;
-          blurTimeRef.current = null;
-        }
-
-        if (timerRef.current) clearInterval(timerRef.current);
-
-        if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
-          setStatus("warning");
-        } else {
+    // සරල, විශ්වාසවන්ත සෙකන්ඩ් කවුන්ටරය (No complicated blur/focus detection)
+    timerRef.current = setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
           setStatus("completed");
           onUnlockSuccess();
+          return 0;
         }
-      } else {
-        isPageVisibleRef.current = false;
-        blurTimeRef.current = now;
-      }
-    };
-
-    const handleBlur = () => {
-      const now = Date.now();
-      if (isPageVisibleRef.current) {
-        isPageVisibleRef.current = false;
-        blurTimeRef.current = now;
-      }
-    };
-
-    const handleFocus = () => {
-      const now = Date.now();
-      if (!isPageVisibleRef.current) {
-        isPageVisibleRef.current = true;
-        if (blurTimeRef.current !== null) {
-          accumulatedTimeRef.current += now - blurTimeRef.current;
-          blurTimeRef.current = null;
-        }
-
-        if (timerRef.current) clearInterval(timerRef.current);
-
-        if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
-          setStatus("warning");
-        } else {
-          setStatus("completed");
-          onUnlockSuccess();
-        }
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("blur", handleBlur);
-    window.addEventListener("focus", handleFocus);
+        return prev - 1;
+      });
+    }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("blur", handleBlur);
-      window.removeEventListener("focus", handleFocus);
     };
   }, [status, onUnlockSuccess]);
 
@@ -151,7 +76,6 @@ export function DownloadCountdownModal({
     } catch {
       /* noop */
     }
-    blurTimeRef.current = Date.now();
     setStatus("verifying");
   };
 
@@ -196,7 +120,7 @@ export function DownloadCountdownModal({
 
           <div className="p-8 flex flex-col items-center text-center gap-5">
             {status === "idle" ? (
-              /* IDLE STATE: User ad එක click කිරීමට පෙර */
+              /* IDLE STATE: Click කිරීමට පෙර */
               <>
                 <div className="w-16 h-16 rounded-2xl bg-primary/15 border border-primary/30 grid place-items-center">
                   <Lock className="w-8 h-8 text-primary" />
@@ -207,8 +131,8 @@ export function DownloadCountdownModal({
                     <span className="text-[11px] font-normal text-muted-foreground block mt-1">ඩවුන්ලෝඩ් ලින්ක් එක ලබා ගැනීමට</span>
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                    Please visit our sponsor link for just <span className="text-primary font-semibold">5 seconds</span> to unlock your file.
-                    <span className="block text-[11px] mt-1 text-muted-foreground/75">කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් එහි රැඳී සිටින්න.</span>
+                    Please visit our sponsor link to unlock your file.
+                    <span className="block text-[11px] mt-1 text-muted-foreground/75">කරුණාකර පහත බටන් එක ක්ලික් කර අනුග්‍රාහක වෙබ් අඩවිය විවෘත කරන්න.</span>
                   </p>
                 </div>
                 
@@ -219,12 +143,12 @@ export function DownloadCountdownModal({
                     <span className="text-[11px] text-muted-foreground/60 ml-4">පහත බටන් එක ක්ලික් කරන්න.</span>
                   </div>
                   <div className="flex flex-col">
-                    <span><span className="font-bold text-primary">2.</span> Stay on sponsor page for 5 seconds.</span>
-                    <span className="text-[11px] text-muted-foreground/60 ml-4">තත්පර 5ක් එම වෙබ් අඩවියේ රැඳී සිටින්න.</span>
+                    <span><span className="font-bold text-primary">2.</span> Sponsor page will open in a new tab.</span>
+                    <span className="text-[11px] text-muted-foreground/60 ml-4">නව ටැබ් එකක අනුග්‍රාහක පිටුව විවෘත වේ.</span>
                   </div>
                   <div className="flex flex-col">
-                    <span><span className="font-bold text-primary">3.</span> Return here to start downloading.</span>
-                    <span className="text-[11px] text-muted-foreground/60 ml-4">නැවත මෙම පිටුවට පැමිණ ඩවුන්ලෝඩ් කරන්න.</span>
+                    <span><span className="font-bold text-primary">3.</span> Return here and wait 5 seconds.</span>
+                    <span className="text-[11px] text-muted-foreground/60 ml-4">මෙහි තත්පර 5ක් රැඳී සිට ඩවුන්ලෝඩ් කරන්න.</span>
                   </div>
                 </div>
 
@@ -235,33 +159,79 @@ export function DownloadCountdownModal({
                   Unlock Download | සක්‍රීය කරන්න <ExternalLink className="w-4 h-4" />
                 </button>
               </>
-            ) : status === "warning" ? (
-              /* WARNING STATE: වේලාව මදි වූ විට එන message එක */
+            ) : status === "verifying" ? (
+              /* VERIFYING (COUNTDOWN) STATE: බ්ලර් චෙකර්ස් නොමැත */
               <>
-                <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 grid place-items-center">
-                  <AlertTriangle className="w-8 h-8 text-amber-400 animate-pulse" />
+                <div className="relative w-24 h-24 flex items-center justify-center">
+                  <svg className="absolute inset-0 -rotate-90" width="96" height="96" viewBox="0 0 96 96">
+                    <circle cx="48" cy="48" r="32" fill="none" stroke="oklch(1 0 0 / 0.06)" strokeWidth="6" />
+                    <circle
+                      cx="48"
+                      cy="48"
+                      r="32"
+                      fill="none"
+                      stroke="url(#ring-gradient)"
+                      strokeWidth="6"
+                      strokeLinecap="round"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={dashOffset}
+                      style={{ transition: "stroke-dashoffset 1s linear" }}
+                    />
+                    <defs>
+                      <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stopColor="oklch(0.62 0.24 25)" />
+                        <stop offset="100%" stopColor="oklch(0.55 0.25 18)" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                  <div className="flex flex-col items-center">
+                    <span className="text-3xl font-extrabold tabular-nums text-gradient leading-none">
+                      {secondsLeft}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground mt-0.5 uppercase tracking-wide">sec</span>
+                  </div>
                 </div>
+
                 <div>
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <Lock className="w-3.5 h-3.5 text-primary" />
+                    <span className="text-xs font-bold uppercase tracking-widest text-primary">
+                      Preparing Your File
+                    </span>
+                  </div>
                   <h3 className="text-base font-bold text-foreground">
-                    Verification Paused <br />
-                    <span className="text-[11px] font-normal text-amber-400/80 block mt-1">තහවුරු කිරීම නැවතී ඇත!</span>
+                    Generating download link... <br />
+                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">ඩවුන්ලෝඩ් ලින්ක් එක සූදානම් කරමින් පවතී...</span>
                   </h3>
-                  <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                    You returned too early! Please stay on the sponsor page for at least{" "}
-                    <span className="text-amber-400 font-semibold">{secondsLeft} more seconds</span> to unlock.
-                    <span className="block text-[11px] mt-1.5 text-muted-foreground/80">
-                      ඔබ නියමිත කාලයට පෙර ආපසු පැමිණ ඇත! කරුණාකර තව තත්පර {secondsLeft}ක් අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
+                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                    Please wait{" "}
+                    <span className="text-foreground font-semibold">
+                      {secondsLeft} second{secondsLeft !== 1 ? "s" : ""}
+                    </span>.
+                    <span className="block text-[11px] mt-1 text-muted-foreground/80">
+                      කරුණාකර තව තත්පර {secondsLeft}ක් රැඳී සිටින්න.
                     </span>
                   </p>
                 </div>
+
+                <div className="w-full h-1.5 rounded-full bg-muted/40 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-primary rounded-full transition-all"
+                    style={{
+                      width: `${((COUNTDOWN_SECONDS - secondsLeft) / COUNTDOWN_SECONDS) * 100}%`,
+                      transition: "width 1s linear",
+                    }}
+                  />
+                </div>
+
                 <button
                   onClick={handleStartVerification}
-                  className="px-6 py-2.5 rounded-full bg-gradient-primary text-primary-foreground text-sm font-bold shadow-glow hover:opacity-90 transition cursor-pointer w-full"
+                  className="text-xs text-primary/80 hover:text-primary underline cursor-pointer"
                 >
-                  Resume Unlocking | නැවත උත්සාහ කරන්න
+                  Sponsor page closed? Click to reopen | නැවත විවෘත කරන්න
                 </button>
               </>
-            ) : status === "completed" ? (
+            ) : (
               /* COMPLETED STATE */
               <>
                 <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 grid place-items-center">
@@ -302,78 +272,6 @@ export function DownloadCountdownModal({
                     Close | වසන්න
                   </button>
                 </div>
-              </>
-            ) : (
-              /* VERIFYING (COUNTDOWN) STATE */
-              <>
-                <div className="relative w-24 h-24 flex items-center justify-center">
-                  <svg className="absolute inset-0 -rotate-90" width="96" height="96" viewBox="0 0 96 96">
-                    <circle cx="48" cy="48" r="32" fill="none" stroke="oklch(1 0 0 / 0.06)" strokeWidth="6" />
-                    <circle
-                      cx="48"
-                      cy="48"
-                      r="32"
-                      fill="none"
-                      stroke="url(#ring-gradient)"
-                      strokeWidth="6"
-                      strokeLinecap="round"
-                      strokeDasharray={circumference}
-                      strokeDashoffset={dashOffset}
-                      style={{ transition: "stroke-dashoffset 0.1s linear" }}
-                    />
-                    <defs>
-                      <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="oklch(0.62 0.24 25)" />
-                        <stop offset="100%" stopColor="oklch(0.55 0.25 18)" />
-                      </linearGradient>
-                    </defs>
-                  </svg>
-                  <div className="flex flex-col items-center">
-                    <span className="text-3xl font-extrabold tabular-nums text-gradient leading-none">
-                      {secondsLeft}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground mt-0.5 uppercase tracking-wide">sec</span>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-center gap-2 mb-2">
-                    <Lock className="w-3.5 h-3.5 text-primary" />
-                    <span className="text-xs font-bold uppercase tracking-widest text-primary">
-                      Verifying Sponsor Visit
-                    </span>
-                  </div>
-                  <h3 className="text-base font-bold text-foreground">
-                    Verifying ad view... <br />
-                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">දැන්වීම පරීක්ෂා කරමින් පවතී...</span>
-                  </h3>
-                  <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-                    Please stay on the sponsor page for{" "}
-                    <span className="text-foreground font-semibold">
-                      {secondsLeft} second{secondsLeft !== 1 ? "s" : ""}
-                    </span>.
-                    <span className="block text-[11px] mt-1 text-muted-foreground/80">
-                      කරුණාකර තව තත්පර {secondsLeft}ක් අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
-                    </span>
-                  </p>
-                </div>
-
-                <div className="w-full h-1.5 rounded-full bg-muted/40 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-primary rounded-full transition-all"
-                    style={{
-                      width: `${((COUNTDOWN_SECONDS - secondsLeft) / COUNTDOWN_SECONDS) * 100}%`,
-                      transition: "width 0.1s linear",
-                    }}
-                  />
-                </div>
-
-                <button
-                  onClick={handleStartVerification}
-                  className="text-xs text-primary/80 hover:text-primary underline cursor-pointer"
-                >
-                  Sponsor page closed? Click to reopen | නැවත විවෘත කරන්න
-                </button>
               </>
             )}
           </div>
@@ -466,4 +364,4 @@ export function DownloadButton({
       )}
     </>
   );
-}
+                                                                                                                   }
