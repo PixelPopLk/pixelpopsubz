@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
 import { logDownload } from "@/integrations/supabase/client";
 
-const MONETAG_URL = "https://acorntar.com/mavhdyhj78?key=dc67dd9ce96dd9a20b59e14a01a6a093";
+const MONETAG_URL = "https://omg10.com/4/11672355";
 const ADSTERRA_URL = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
 
 const COUNTDOWN_SECONDS = 5;
