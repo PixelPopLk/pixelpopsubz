@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { ShieldAlert, Check, LogOut } from "lucide-react";
 
+// දින 2ක් සඳහා මිලිතත්පර ප්‍රමාණය (2 * 24 * 60 * 60 * 1000)
+const TWO_DAYS_MS = 172800000; 
+
 export function AgeGate(): React.JSX.Element | null {
   const [isVerified, setIsVerified] = useState<boolean>(true);
   const [mounted, setMounted] = useState<boolean>(false);
@@ -8,23 +11,40 @@ export function AgeGate(): React.JSX.Element | null {
   useEffect(() => {
     setMounted(true);
     try {
-      const verified = localStorage.getItem("age_verified");
-      if (verified !== "true") {
+      const verifiedTime = localStorage.getItem("age_verified_time");
+      
+      if (verifiedTime) {
+        const savedTime = parseInt(verifiedTime, 10);
+        const currentTime = Date.now();
+
+        // දින 2ක කාලය තවමත් ඉතිරිව තිබේදැයි බලයි
+        if (currentTime - savedTime < TWO_DAYS_MS) {
+          setIsVerified(true);
+        } else {
+          // කාලය අවසන් නම් පරණ දත්ත ඉවත් කර නැවත age gate එක පෙන්වයි
+          localStorage.removeItem("age_verified_time");
+          setIsVerified(false);
+        }
+      } else {
         setIsVerified(false);
       }
     } catch {
-      // localStorage බ්ලොක් වී ඇත්නම් overlay එක පෙන්වයි
+      // localStorage භාවිතය සීමා වී ඇත්නම් overlay එක පෙන්වයි
       setIsVerified(false);
     }
   }, []);
 
   const handleConfirm = (): void => {
     try {
-      localStorage.setItem("age_verified", "true");
+      // තහවුරු කළ වත්මන් වේලාව සුරැකීම
+      localStorage.setItem("age_verified_time", Date.now().toString());
     } catch {
       /* noop */
     }
     setIsVerified(true);
+    
+    // Adsterra ලින්ක් එක වෙත redirect කිරීම
+    window.location.href = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
   };
 
   const handleExit = (): void => {
@@ -95,4 +115,4 @@ export function AgeGate(): React.JSX.Element | null {
       </div>
     </div>
   );
-    }
+}
