@@ -14,6 +14,9 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AgeGate } from "../components/AgeGate"; // AgeGate.tsx ගොනුව import කිරීම
 
+// 🟢 ඔබ ලබාදුන් Ad Link එක
+const AD_URL = "https://acorntar.com/mavhdyhj78?key=dc67dd9ce96dd9a20b59e14a01a6a093";
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -83,7 +86,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "Premium Sinhala subtitles for movies and TV series. Curated, fast, and secure downloads." },
       { name: "keywords", content: "Sinhala Subtitles, Download Movie Subtitles, PixelPopLK, Sinhala Subitiles TV Series, Sinhala Subtitles TV Series, subtitle download, sri lanka subtitles" },
       { name: "author", content: "PixelPopLK" },
-      { property: "og:title", content: "PixelPopLK — Sinhala Subtitles" },
+      { property: "og:title", primary: "PixelPopLK — Sinhala Subtitles" },
       { property: "og:description", content: "Premium Sinhala subtitles for movies and TV series. Curated, fast, and secure downloads." },
       { property: "og:type", content: "website" },
       { property: "og:site_name", content: "PixelPopLK" },
@@ -151,6 +154,45 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const location = useLocation();
+
+  const isAdminPage = location.pathname.startsWith("/manage-admin");
+
+  useEffect(() => {
+    // Admin පිටුවේ නම් මේ Ad click listener එක run වෙන්නේ නෑ
+    if (isAdminPage) return;
+
+    const handleGlobalClick = (event: MouseEvent) => {
+      // Path එක Admin නම් ආරක්ෂිත පියවරක් ලෙස නවත්වනවා
+      if (window.location.pathname.startsWith("/manage-admin")) return;
+
+      const target = event.target as HTMLElement;
+      // Button එකක් හෝ Link එකක් (a tag) click වුණාද බලනවා
+      const clickable = target.closest("button, a");
+
+      if (clickable) {
+        // User කලින් ad එක බැලුවදැයි පරීක්ෂා කිරීම
+        const hasSeenAd = sessionStorage.getItem("hasSeenAd");
+
+        if (!hasSeenAd) {
+          // Ad එක බැලූ බව සටහන් කරගන්නවා
+          sessionStorage.setItem("hasSeenAd", "true");
+
+          // Button එකේ සාමාන්‍ය navigation එක නවත්වා Ad එකට redirect කරනවා
+          event.preventDefault();
+          event.stopPropagation();
+          window.location.href = AD_URL;
+        }
+      }
+    };
+
+    // Capture phase එකේදීම click එක අල්ලගන්නවා
+    document.addEventListener("click", handleGlobalClick, { capture: true });
+
+    return () => {
+      document.removeEventListener("click", handleGlobalClick, { capture: true });
+    };
+  }, [isAdminPage]);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -161,4 +203,4 @@ function RootComponent() {
       <Outlet />
     </QueryClientProvider>
   );
-      }
+        }
