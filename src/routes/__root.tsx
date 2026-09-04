@@ -12,10 +12,12 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { AgeGate } from "../components/AgeGate"; // AgeGate.tsx ගොනුව import කිරීම
+import { AgeGate } from "../components/AgeGate";
 
-// 🟢 ඔබ ලබාදුන් Ad Link එක
+// 🟢 Ad Link එක
 const AD_URL = "https://acorntar.com/mavhdyhj78?key=dc67dd9ce96dd9a20b59e14a01a6a093";
+// තත්පර 15 cooldown කාලය (milliseconds වලින්)
+const COOLDOWN_TIME = 15000;
 
 function NotFoundComponent() {
   return (
@@ -86,7 +88,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "Premium Sinhala subtitles for movies and TV series. Curated, fast, and secure downloads." },
       { name: "keywords", content: "Sinhala Subtitles, Download Movie Subtitles, PixelPopLK, Sinhala Subitiles TV Series, Sinhala Subtitles TV Series, subtitle download, sri lanka subtitles" },
       { name: "author", content: "PixelPopLK" },
-      { property: "og:title", primary: "PixelPopLK — Sinhala Subtitles" },
+      { property: "og:title", content: "PixelPopLK — Sinhala Subtitles" },
       { property: "og:description", content: "Premium Sinhala subtitles for movies and TV series. Curated, fast, and secure downloads." },
       { property: "og:type", content: "website" },
       { property: "og:site_name", content: "PixelPopLK" },
@@ -122,18 +124,13 @@ const websiteSchema = {
 
 function RootShell({ children }: { children: ReactNode }) {
   const location = useLocation();
-  
-  // URL path එක "/manage-admin" වලින් ආරම්භ වේ දැයි පරීක්ෂා කිරීම
   const isAdminPage = location.pathname.startsWith("/manage-admin");
 
   return (
     <html lang="en">
       <head>
         <HeadContent />
-        
-        {/* Google Search Console Verification Meta Tag */}
         <meta name="google-site-verification" content="VoErL02EHeHtDv46aBcjIEm5DpUTnJRhPF89ewoK-M4" />
-        
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
@@ -155,52 +152,91 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const location = useLocation();
-
   const isAdminPage = location.pathname.startsWith("/manage-admin");
 
   useEffect(() => {
-    // Admin පිටුවේ නම් මේ Ad click listener එක run වෙන්නේ නෑ
-    if (isAdminPage) return;
-
-    const handleGlobalClick = (event: MouseEvent) => {
-      // Path එක Admin නම් ආරක්ෂිත පියවරක් ලෙස නවත්වනවා
+    // 1. User Ad එකෙන් "Back" පැමිණි විට ස්වයංක්‍රීයව target පිටුවට Redirect කිරීම (Auto-navigation)
+    const checkPendingNavigation = () => {
       if (window.location.pathname.startsWith("/manage-admin")) return;
 
-      const target = event.target as HTMLElement;
-      // Button එකක් හෝ Link එකක් (a tag) click වුණාද බලනවා
-      const clickable = target.closest("button, a");
-
-      if (clickable) {
-        // User කලින් ad එක බැලුවදැයි පරීක්ෂා කිරීම
-        const hasSeenAd = sessionStorage.getItem("hasSeenAd");
-
-        if (!hasSeenAd) {
-          // Ad එක බැලූ බව සටහන් කරගන්නවා
-          sessionStorage.setItem("hasSeenAd", "true");
-
-          // Button එකේ සාමාන්‍ය navigation එක නවත්වා Ad එකට redirect කරනවා
-          event.preventDefault();
-          event.stopPropagation();
-          window.location.href = AD_URL;
-        }
+      const pendingNav = sessionStorage.getItem("pending_target_url");
+      if (pendingNav) {
+        sessionStorage.removeItem("pending_target_url");
+        // කලින් click කළ page එකට auto redirect වෙනවා
+        window.location.href = pendingNav;
       }
     };
 
-    // Capture phase එකේදීම click එක අල්ලගන්නවා
+    checkPendingNavigation();
+    window.addEventListener("pageshow", checkPendingNavigation);
+
+    // 2. Click Handler - Cards, Buttons, Sidebar සඳහා
+    const handleGlobalClick = (event: MouseEvent) => {
+      if (window.location.pathname.startsWith("/manage-admin")) return;
+
+      const target = event.target as HTMLElement;
+
+      // AgeGate overlay එක click කරද්දී ad නොපෙන්වීමට
+      if (target.closest(".age-gate, [data-age-gate]")) return;
+
+      // Click කළ element එක හෝ එහි parent එක <a> හෝ <button> ද කියා සොයා ගැනීම
+      const clickable = target.closest("a, button") as HTMLElement | null;
+      if (!clickable) return;
+
+      // Link එකක් නම් එහි destination URL එක ලබා ගැනීම
+      const linkElement = clickable.closest("a") as HTMLAnchorElement | null;
+      const targetUrl = linkElement ? linkElement.href : null;
+
+      // Click කළ button එක / card එක හඳුනාගැනීමට Unique Key එකක් සෑදීම
+      const itemKey =
+        targetUrl ||
+        clickable.id ||
+        clickable.getAttribute("data-id") ||
+        (clickable.innerText ? clickable.innerText.trim().slice(0, 30) : "btn");
+
+      // Cooldowns පරීක්ෂා කිරීම (තත්පර 15ක් ගොස් ඇත්දැයි බැලීමට)
+      let cooldowns: Record<string, number> = {};
+      try {
+        cooldowns = JSON.parse(sessionStorage.getItem("ad_cooldowns") || "{}");
+      } catch (e) {
+        cooldowns = {};
+      }
+
+      const now = Date.now();
+      const lastClickedTime = cooldowns[itemKey];
+
+      // අදාළ button එක තත්පර 15 ඇතුළත click කර ඇත්නම් ad එක පෙන්වන්නේ නැත (සාමාන්‍ය ලෙස වැඩ කරයි)
+      if (lastClickedTime && now - lastClickedTime < COOLDOWN_TIME) {
+        return;
+      }
+
+      // තත්පර 15න් පසු හෝ පළමු වරට click කළේ නම්:
+      cooldowns[itemKey] = now;
+      sessionStorage.setItem("ad_cooldowns", JSON.stringify(cooldowns));
+
+      // Link එකක් නම් user back පැමිණි පසු auto redirect වීමට save කරගන්නවා
+      if (targetUrl && !targetUrl.includes(AD_URL)) {
+        sessionStorage.setItem("pending_target_url", targetUrl);
+      }
+
+      // Event එක නවතා Ad එකට redirect කිරීම
+      event.preventDefault();
+      event.stopPropagation();
+      window.location.href = AD_URL;
+    };
+
     document.addEventListener("click", handleGlobalClick, { capture: true });
 
     return () => {
       document.removeEventListener("click", handleGlobalClick, { capture: true });
+      window.removeEventListener("pageshow", checkPendingNavigation);
     };
   }, [isAdminPage]);
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* 18+ Age Gate overlay එක */}
       <AgeGate />
-
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
       <Outlet />
     </QueryClientProvider>
   );
-        }
+  }
