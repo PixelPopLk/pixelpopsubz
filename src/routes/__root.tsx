@@ -16,7 +16,7 @@ import { AgeGate } from "../components/AgeGate";
 
 // 🟢 Ad Link එක
 const AD_URL = "https://acorntar.com/mavhdyhj78?key=dc67dd9ce96dd9a20b59e14a01a6a093";
-// තත්පර 15 cooldown කාලය (milliseconds වලින්)
+// තත්පර 15 cooldown කාලය
 const COOLDOWN_TIME = 15000;
 
 function NotFoundComponent() {
@@ -155,14 +155,13 @@ function RootComponent() {
   const isAdminPage = location.pathname.startsWith("/manage-admin");
 
   useEffect(() => {
-    // 1. User Ad එකෙන් "Back" පැමිණි විට ස්වයංක්‍රීයව target පිටුවට Redirect කිරීම (Auto-navigation)
+    // 1. User Ad එකෙන් "Back" පැමිණි විට Auto Target පිටුවට Redirect කිරීම
     const checkPendingNavigation = () => {
       if (window.location.pathname.startsWith("/manage-admin")) return;
 
       const pendingNav = sessionStorage.getItem("pending_target_url");
       if (pendingNav) {
         sessionStorage.removeItem("pending_target_url");
-        // කලින් click කළ page එකට auto redirect වෙනවා
         window.location.href = pendingNav;
       }
     };
@@ -170,56 +169,83 @@ function RootComponent() {
     checkPendingNavigation();
     window.addEventListener("pageshow", checkPendingNavigation);
 
-    // 2. Click Handler - Cards, Buttons, Sidebar සඳහා
+    // 2. Global Click Handler
     const handleGlobalClick = (event: MouseEvent) => {
+      // Admin පිටුවේ නම් නවත්වනවා
       if (window.location.pathname.startsWith("/manage-admin")) return;
 
       const target = event.target as HTMLElement;
 
-      // AgeGate overlay එක click කරද්දී ad නොපෙන්වීමට
-      if (target.closest(".age-gate, [data-age-gate]")) return;
+      // 🛑 Popup Messages, Dialogs, Modals, Toasts සහ AgeGate ignore කිරීම
+      const isInsidePopup = target.closest(
+        '[role="dialog"], [role="alertdialog"], [aria-modal="true"], ' +
+        '.modal, .dialog, .popup, [data-radix-dialog-content], ' +
+        '[data-sonner-toast], [data-toast], .toast, [role="alert"], ' +
+        '.age-gate, [data-age-gate]'
+      );
+      if (isInsidePopup) return;
 
-      // Click කළ element එක හෝ එහි parent එක <a> හෝ <button> ද කියා සොයා ගැනීම
+      // Click කළ element එක <a> හෝ <button> ද කියා බැලීම
       const clickable = target.closest("a, button") as HTMLElement | null;
       if (!clickable) return;
 
-      // Link එකක් නම් එහි destination URL එක ලබා ගැනීම
       const linkElement = clickable.closest("a") as HTMLAnchorElement | null;
       const targetUrl = linkElement ? linkElement.href : null;
 
-      // Click කළ button එක / card එක හඳුනාගැනීමට Unique Key එකක් සෑදීම
+      // 🛑 Normal Download Buttons ignore කිරීම
+      const isDownloadButton =
+        clickable.hasAttribute("download") ||
+        Boolean(clickable.closest("[download], [data-download]")) ||
+        (clickable.className && typeof clickable.className === "string" && /download/i.test(clickable.className)) ||
+        (clickable.id && /download/i.test(clickable.id)) ||
+        (clickable.textContent && /download|බාගන්න/i.test(clickable.textContent)) ||
+        (targetUrl && (/\.(srt|zip|rar|7z|sub)($|\?)/i.test(targetUrl) || /download/i.test(targetUrl)));
+
+      // 🛑 Telegram Download / Channel Buttons ignore කිරීම
+      const isTelegramButton =
+        Boolean(targetUrl && /(t\.me|telegram\.me|telegram\.dog)/i.test(targetUrl)) ||
+        Boolean(clickable.textContent && /telegram|ටෙලිග්‍රෑම්/i.test(clickable.textContent)) ||
+        (clickable.className && typeof clickable.className === "string" && /telegram/i.test(clickable.className)) ||
+        (clickable.id && /telegram/i.test(clickable.id));
+
+      // Download හෝ Telegram buttons නම් Ad එක Skip කර සාමාන්‍ය පරිදි ක්‍රියා කිරීමට ඉඩ දීම
+      if (isDownloadButton || isTelegramButton) {
+        return;
+      }
+
+      // Click කළ button එක / card එක හඳුනාගැනීමට Key එකක් සෑදීම
       const itemKey =
         targetUrl ||
         clickable.id ||
         clickable.getAttribute("data-id") ||
         (clickable.innerText ? clickable.innerText.trim().slice(0, 30) : "btn");
 
-      // Cooldowns පරීක්ෂා කිරීම (තත්පර 15ක් ගොස් ඇත්දැයි බැලීමට)
+      // Cooldowns පරීක්ෂා කිරීම (තත්පර 15)
       let cooldowns: Record<string, number> = {};
       try {
         cooldowns = JSON.parse(sessionStorage.getItem("ad_cooldowns") || "{}");
-      } catch (e) {
+      } catch {
         cooldowns = {};
       }
 
       const now = Date.now();
       const lastClickedTime = cooldowns[itemKey];
 
-      // අදාළ button එක තත්පර 15 ඇතුළත click කර ඇත්නම් ad එක පෙන්වන්නේ නැත (සාමාන්‍ය ලෙස වැඩ කරයි)
+      // අදාළ button/card එක තත්පර 15 ඇතුළත click කර ඇත්නම් Ad open නොකර කෙලින්ම යන්න ඉඩ දෙනවා
       if (lastClickedTime && now - lastClickedTime < COOLDOWN_TIME) {
         return;
       }
 
-      // තත්පර 15න් පසු හෝ පළමු වරට click කළේ නම්:
+      // අලුතින් click කළ විට කාලය සටහන් කරගන්නවා
       cooldowns[itemKey] = now;
       sessionStorage.setItem("ad_cooldowns", JSON.stringify(cooldowns));
 
-      // Link එකක් නම් user back පැමිණි පසු auto redirect වීමට save කරගන්නවා
+      // Back ගැසූ විට auto ඇතුළට යාමට target link එක save කරගන්නවා
       if (targetUrl && !targetUrl.includes(AD_URL)) {
         sessionStorage.setItem("pending_target_url", targetUrl);
       }
 
-      // Event එක නවතා Ad එකට redirect කිරීම
+      // Ad එකට redirect කිරීම
       event.preventDefault();
       event.stopPropagation();
       window.location.href = AD_URL;
@@ -239,4 +265,4 @@ function RootComponent() {
       <Outlet />
     </QueryClientProvider>
   );
-  }
+}
