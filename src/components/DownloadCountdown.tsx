@@ -22,16 +22,30 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🚀 400 Error එක සම්පූර්ණයෙන්ම ඉවත් කළ Fast Native Download Function එක
-function triggerFastNativeDownload(rawUrl: string) {
+// 🚀 100% Safe Fast Native Download (කිසිම Regex Error එකක් නැතිව)
+function triggerFastNativeDownload(rawUrl: string, title?: string) {
   try {
-    // Supabase 400 Error එක වළක්වා ගැනීමට query parameters ඉවත් කර සැබෑ URL එක ගැනීම
     const cleanUrl = rawUrl.split("?")[0].trim();
+    
+    // File extension එක (.zip / .rar / .srt) හඳුනාගැනීම
+    const extMatch = cleanUrl.match(/\.(zip|rar|7z|srt|sub)$/i);
+    const extension = extMatch ? extMatch[1].toLowerCase() : "zip";
+
+    // Invalid file characters ඉවත් කිරීම (Regex නැතිව safe string filter මගින්)
+    const rawTitle = title || "Subtitle";
+    const invalidChars = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"];
+    const safeTitle = rawTitle
+      .split("")
+      .filter((char) => !invalidChars.includes(char))
+      .join("")
+      .trim();
+
+    const fileName = `${safeTitle} Sinhala Sub - PixelPopLK.${extension}`;
 
     // Native Browser Download එක trigger කිරීම
     const a = document.createElement("a");
     a.href = cleanUrl;
-    a.setAttribute("download", "");
+    a.setAttribute("download", fileName);
     a.setAttribute("target", "_self");
     document.body.appendChild(a);
     a.click();
@@ -53,6 +67,7 @@ interface DownloadCountdownModalProps {
 export function DownloadCountdownModal({
   downloadLink,
   subtitleId,
+  title,
   variant = "direct",
   onClose,
   onUnlockSuccess,
@@ -197,7 +212,6 @@ export function DownloadCountdownModal({
     setStatus("verifying");
   };
 
-  // 🟢 Start Download Button එක Click කළ විට (Instant Download)
   const handleFinalDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -211,7 +225,7 @@ export function DownloadCountdownModal({
     if (variant === "telegram") {
       window.open(resolvedLink.trim(), "_blank", "noopener");
     } else {
-      triggerFastNativeDownload(resolvedLink);
+      triggerFastNativeDownload(resolvedLink, title);
     }
 
     logDownload(subtitleId, variant);
@@ -282,7 +296,6 @@ export function DownloadCountdownModal({
                     {variant === "telegram" ? "Telegram වෙතින් බාගත කිරීමට" : "ඩවුන්ලෝඩ් කරගැනීම සඳහා"}
                   </h3>
 
-                  {/* 🟢 ඔයා ඉල්ලපු සිංහල උපදෙස් පෙළ (පැහැදිලිව සහ ලොකුවට) */}
                   <div className="p-4 rounded-2xl bg-primary/10 border border-primary/25 text-foreground font-medium text-sm leading-relaxed text-center space-y-2">
                     <p className="text-[15px] font-semibold text-primary-foreground">
                       කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් රැදීසිට ආපහු මෙතනට එන්න.
@@ -347,7 +360,6 @@ export function DownloadCountdownModal({
                 </div>
 
                 <div className="flex flex-col gap-2 w-full" data-no-ad="true">
-                  {/* 🟢 Fast Direct Download Button */}
                   <button
                     type="button"
                     data-no-ad="true"
@@ -490,7 +502,7 @@ export function DownloadButton({
         if (variant === "telegram") {
           window.open(unlockedUrl.trim(), "_blank", "noopener");
         } else {
-          triggerFastNativeDownload(unlockedUrl);
+          triggerFastNativeDownload(unlockedUrl, title);
         }
         logDownload(subtitleId, variant);
       } else {
