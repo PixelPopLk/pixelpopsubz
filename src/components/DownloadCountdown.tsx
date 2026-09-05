@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, Loader2 } from "lucide-react";
+import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, Loader2, CheckCircle2 } from "lucide-react";
 import { supabase, logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://acorntar.com/fncjyve9?key=a347a729277e7dcc5e07924adff80652";
@@ -22,47 +22,30 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🟢 Extension එක (.zip ද .srt ද කියලා) හරියටම හඳුනාගෙන Download කරවන Function එක
-async function triggerDirectDownload(url: string, title?: string) {
+// 🚀 Fast Native Download Function (Phone Notification එක සහිතව)
+function triggerFastNativeDownload(rawUrl: string, title?: string) {
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error("Network response was not ok");
-    const blob = await response.blob();
-    const blobUrl = window.URL.createObjectURL(blob);
-
-    // 🚀 File Extension එක Auto-Detect කරගැනීම (.zip / .rar / .srt)
-    let extension = "zip";
-    const urlPath = url.split("?")[0];
-    const match = urlPath.match(/\.([a-zA-Z0-9]+)$/);
-
-    if (match && match[1]) {
-      extension = match[1].toLowerCase();
-    } else {
-      const contentType = response.headers.get("content-type");
-      if (contentType?.includes("zip")) extension = "zip";
-      else if (contentType?.includes("rar")) extension = "rar";
-      else if (contentType?.includes("x-subrip") || contentType?.includes("text")) extension = "srt";
-    }
-
     const cleanTitle = title ? title.replace(/[/\\?%*:|"<>]/g, "-").trim() : "Subtitle";
+    
+    // File extension එක (.zip / .rar / .srt) හඳුනාගැනීම
+    const extMatch = rawUrl.split("?")[0].match(/\.(zip|rar|7z|srt|sub)$/i);
+    const extension = extMatch ? extMatch[1].toLowerCase() : "zip";
     const fileName = `${cleanTitle} Sinhala Sub - PixelPopLK.${extension}`;
 
+    // Supabase එකට direct attachment header එක යැවීම (?download=filename)
+    const downloadUrl = rawUrl.includes("?")
+      ? `${rawUrl}&download=${encodeURIComponent(fileName)}`
+      : `${rawUrl}?download=${encodeURIComponent(fileName)}`;
+
+    // Native Browser Download එක trigger කිරීම
     const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = fileName;
+    a.href = downloadUrl;
+    a.setAttribute("download", fileName);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    window.URL.revokeObjectURL(blobUrl);
   } catch (err) {
-    // Fallback ක්‍රමය
-    const forceUrl = url.includes("?") ? `${url}&download=` : `${url}?download=`;
-    const fallbackA = document.createElement("a");
-    fallbackA.href = forceUrl;
-    fallbackA.setAttribute("download", "");
-    document.body.appendChild(fallbackA);
-    fallbackA.click();
-    document.body.removeChild(fallbackA);
+    window.location.href = rawUrl;
   }
 }
 
@@ -85,7 +68,7 @@ export function DownloadCountdownModal({
 }: DownloadCountdownModalProps) {
   const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
-  const [downloading, setDownloading] = useState(false);
+  const [downloadStarted, setDownloadStarted] = useState(false);
   const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
   const blurTimeRef = useRef<number | null>(null);
@@ -210,7 +193,8 @@ export function DownloadCountdownModal({
     };
   }, [status]);
 
-  const handleStartVerification = () => {
+  const handleStartVerification = (e: React.MouseEvent) => {
+    e.stopPropagation();
     const activeAdUrl = getRandomAdUrl();
     try {
       const w = window.open(activeAdUrl, "_blank", "noopener");
@@ -222,23 +206,29 @@ export function DownloadCountdownModal({
     setStatus("verifying");
   };
 
-  const handleFinalDownload = async () => {
+  // 🟢 Start Download Button එක Click කළ විට (Fast Native Download)
+  const handleFinalDownload = (e: React.MouseEvent) => {
+    e.stopPropagation(); // Ad listener එකෙන් මේ click එක අල්ලන එක 100% නවත්වනවා
+
     if (!resolvedLink || !isSafeUrl(resolvedLink)) {
       alert("Invalid or unsafe download link detected.");
       return;
     }
 
-    setDownloading(true);
+    setDownloadStarted(true);
 
     if (variant === "telegram") {
       window.open(resolvedLink, "_blank", "noopener");
     } else {
-      await triggerDirectDownload(resolvedLink, title);
+      triggerFastNativeDownload(resolvedLink, title);
     }
 
     logDownload(subtitleId, variant);
-    setDownloading(false);
-    onClose();
+
+    // තත්පර 2කින් modal එක close කිරීම
+    setTimeout(() => {
+      onClose();
+    }, 2000);
   };
 
   const circumference = 2 * Math.PI * 32;
@@ -248,11 +238,14 @@ export function DownloadCountdownModal({
     <AnimatePresence>
       <motion.div
         key="modal-backdrop"
+        role="dialog"
+        aria-modal="true"
+        data-no-ad="true"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.25 }}
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 modal"
         style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(8px)" }}
         onMouseDown={(e) => {
           if (e.target === e.currentTarget) onClose();
@@ -260,26 +253,34 @@ export function DownloadCountdownModal({
       >
         <motion.div
           key="modal-card"
+          role="document"
+          data-no-ad="true"
           initial={{ opacity: 0, scale: 0.9, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.9, y: 20 }}
           transition={{ type: "spring", stiffness: 300, damping: 28 }}
-          className="relative w-full max-w-sm rounded-3xl border border-border shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)] overflow-hidden"
+          className="relative w-full max-w-sm rounded-3xl border border-border shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)] overflow-hidden modal-content"
           style={{
             background: "linear-gradient(160deg, oklch(0.20 0.01 20 / 0.98), oklch(0.14 0.008 20 / 0.98))",
           }}
+          onClick={(e) => e.stopPropagation()}
         >
           <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-primary opacity-80" />
 
           <button
-            onClick={onClose}
+            type="button"
+            data-no-ad="true"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
             aria-label="Close"
             className="absolute top-4 right-4 w-7 h-7 rounded-full bg-muted/50 hover:bg-muted flex items-center justify-center transition cursor-pointer text-muted-foreground hover:text-foreground z-10"
           >
             <X className="w-3.5 h-3.5" />
           </button>
 
-          <div className="p-8 flex flex-col items-center text-center gap-5">
+          <div className="p-8 flex flex-col items-center text-center gap-5" data-no-ad="true">
             {status === "idle" ? (
               <>
                 <div className="w-16 h-16 rounded-2xl bg-primary/15 border border-primary/30 grid place-items-center">
@@ -287,7 +288,7 @@ export function DownloadCountdownModal({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-foreground leading-snug">
-                    Unlock Your Download <br />
+                    {variant === "telegram" ? "Open Telegram Subtitle" : "Unlock Your Download"} <br />
                     <span className="text-[11px] font-normal text-muted-foreground block mt-1">
                       ඩවුන්ලෝඩ් ලින්ක් එක ලබා ගැනීමට
                     </span>
@@ -295,27 +296,14 @@ export function DownloadCountdownModal({
                   <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
                     Please visit our sponsor link for just <span className="text-primary font-semibold">5 seconds</span> to unlock your file.
                     <span className="block text-[11px] mt-1 text-muted-foreground/75">
-                      කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් එහි රැඳී සිටින්න.
+                      කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් රැඳී සිටින්න.
                     </span>
                   </p>
                 </div>
 
-                <div className="w-full text-left bg-muted/20 p-4 rounded-2xl border border-muted/40 text-xs text-muted-foreground space-y-2">
-                  <div className="flex flex-col">
-                    <span><span className="font-bold text-primary">1.</span> Click "Unlock Download" below.</span>
-                    <span className="text-[11px] text-muted-foreground/60 ml-4">පහත බටන් එක ක්ලික් කරන්න.</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span><span className="font-bold text-primary">2.</span> Stay on sponsor page for 5 seconds.</span>
-                    <span className="text-[11px] text-muted-foreground/60 ml-4">තත්පර 5ක් එම වෙබ් අඩවියේ රැඳී සිටින්න.</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span><span className="font-bold text-primary">3.</span> Return here to start downloading.</span>
-                    <span className="text-[11px] text-muted-foreground/60 ml-4">නැවත මෙම පිටුවට පැමිණ ඩවුන්ලෝඩ් කරන්න.</span>
-                  </div>
-                </div>
-
                 <button
+                  type="button"
+                  data-no-ad="true"
                   onClick={handleStartVerification}
                   className="flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-gradient-primary text-primary-foreground text-sm font-bold shadow-glow hover:opacity-90 transition cursor-pointer w-full"
                 >
@@ -336,11 +324,13 @@ export function DownloadCountdownModal({
                     You returned too early! Please stay on the sponsor page for at least{" "}
                     <span className="text-amber-400 font-semibold">{secondsLeft} more seconds</span> to unlock.
                     <span className="block text-[11px] mt-1.5 text-muted-foreground/80">
-                      ඔබ නියමිත කාලයට පෙර ආපසු පැමිණ ඇත! කරුණාකර තව තත්පර {secondsLeft}ක් අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
+                      කරුණාකර තව තත්පර {secondsLeft}ක් අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
                     </span>
                   </p>
                 </div>
                 <button
+                  type="button"
+                  data-no-ad="true"
                   onClick={handleStartVerification}
                   className="px-6 py-2.5 rounded-full bg-gradient-primary text-primary-foreground text-sm font-bold shadow-glow hover:opacity-90 transition cursor-pointer w-full"
                 >
@@ -354,34 +344,56 @@ export function DownloadCountdownModal({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-foreground">
-                    Download Unlocked! <br />
-                    <span className="text-[11px] font-normal text-emerald-400/80 block mt-1">ඩවුන්ලෝඩ් කිරීමට සූදානම්!</span>
+                    {downloadStarted ? "Download Started!" : "Download Unlocked!"} <br />
+                    <span className="text-[11px] font-normal text-emerald-400/80 block mt-1">
+                      {downloadStarted ? "බාගත කිරීම ආරම්භ විය!" : "ඩවුන්ලෝඩ් කිරීමට සූදානම්!"}
+                    </span>
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                    Your secure download file is ready to save.
-                    <span className="block text-[11px] mt-1 text-muted-foreground/80">
-                      ඔබගේ ආරක්ෂිත ඩවුන්ලෝඩ් ගොනුව බාගත කිරීමට සූදානම්.
-                    </span>
+                    {downloadStarted ? (
+                      <span className="text-emerald-400 font-medium">
+                        Check your device notification bar. <br />
+                        ඔබගේ දුරකථනයේ Notification තීරුව පරීක්ෂා කරන්න.
+                      </span>
+                    ) : (
+                      <span>
+                        Your secure file is ready. Click below to download. <br />
+                        <span className="text-[11px] text-muted-foreground/80">පහත බටන් එක ක්ලික් කර බාගත කරගන්න.</span>
+                      </span>
+                    )}
                   </p>
                 </div>
-                <div className="flex flex-col gap-2 w-full">
+
+                <div className="flex flex-col gap-2 w-full" data-no-ad="true">
+                  {/* 🟢 මේ Button එකෙන් කිසිම Ad එකක් Play නොවේ, Direct Fast Download වේ */}
                   <button
-                    disabled={downloading}
+                    type="button"
+                    data-no-ad="true"
+                    data-download="true"
                     onClick={handleFinalDownload}
-                    className="flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg"
+                    className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg active:scale-98"
                   >
-                    {downloading ? (
+                    {downloadStarted ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Saving File... | බාගත වෙමින්...
+                        <CheckCircle2 className="w-5 h-5 text-white animate-pulse" />
+                        Downloading... | බාගත වෙමින්...
                       </>
                     ) : (
-                      "Start Download | ඩවුන්ලෝඩ් කරන්න"
+                      <>
+                        <Download className="w-4 h-4 text-white" />
+                        {variant === "telegram" ? "Open in Telegram" : "Start Download | ඩවුන්ලෝඩ් කරන්න"}
+                      </>
                     )}
                   </button>
+
                   <button
-                    onClick={onClose}
-                    className="px-6 py-2 rounded-full bg-muted text-muted-foreground hover:text-foreground text-sm font-medium transition cursor-pointer w-full"
+                    type="button"
+                    data-no-ad="true"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose();
+                    }}
+                    className="px-6 py-2 rounded-full bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition cursor-pointer w-full mt-1"
                   >
                     Close | වසන්න
                   </button>
@@ -454,6 +466,8 @@ export function DownloadCountdownModal({
                 </div>
 
                 <button
+                  type="button"
+                  data-no-ad="true"
                   onClick={handleStartVerification}
                   className="text-xs text-primary/80 hover:text-primary underline cursor-pointer"
                 >
@@ -485,7 +499,6 @@ export function DownloadButton({
 }) {
   const [showModal, setShowModal] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [unlockedUrl, setUnlockedUrl] = useState<string>(downloadLink || "");
 
   const cacheKey = `unlocked_${subtitleId || downloadLink}`;
@@ -502,17 +515,18 @@ export function DownloadButton({
     }
   }, [cacheKey]);
 
-  const handleDownloadClick = async () => {
+  // Unlock වී ඇත්නම් ක්ෂණික Direct Native Download
+  const handleDownloadClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+
     if (isUnlocked && unlockedUrl) {
       if (isSafeUrl(unlockedUrl)) {
-        setDownloading(true);
         if (variant === "telegram") {
           window.open(unlockedUrl, "_blank", "noopener");
         } else {
-          await triggerDirectDownload(unlockedUrl, title);
+          triggerFastNativeDownload(unlockedUrl, title);
         }
         logDownload(subtitleId, variant);
-        setDownloading(false);
       } else {
         alert("Invalid or unsafe download link detected.");
       }
@@ -539,19 +553,19 @@ export function DownloadButton({
 
   return (
     <>
-      <button onClick={handleDownloadClick} disabled={downloading} className={buttonClass}>
-        {downloading ? (
-          <Loader2 className="w-4 h-4 animate-spin" />
-        ) : isUnlocked ? (
+      <button
+        type="button"
+        data-no-ad="true"
+        data-download="true"
+        onClick={handleDownloadClick}
+        className={buttonClass}
+      >
+        {isUnlocked ? (
           <CheckCircle className="w-4 h-4 text-emerald-400" />
         ) : (
           <Download className="w-4 h-4" />
         )}
-        {downloading
-          ? "Downloading... | බාගත වෙමින්..."
-          : isUnlocked
-          ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න"
-          : label}
+        {isUnlocked ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න" : label}
       </button>
 
       {showModal && (
