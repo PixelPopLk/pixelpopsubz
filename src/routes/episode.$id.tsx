@@ -31,10 +31,13 @@ import { DownloadButton } from "@/components/DownloadCountdown";
 
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
+// 🟢 ආරක්ෂාව: download_link එක මෙතනින් select කරන්නේ නෑ (Bulk Scraping වැළැක්වීමට)
+const SAFE_COLUMNS = "id, title, year, image_url, genre, rating, description, season, episode, created_at, updated_at, telegram_link";
+
 async function fetchEpisodeData(id: string): Promise<Subtitle[]> {
   const { data: targetItem, error: firstError } = await supabase
     .from(SUBTITLES_TABLE)
-    .select("*")
+    .select(SAFE_COLUMNS)
     .eq("id", Number(id) as any)
     .maybeSingle();
 
@@ -44,7 +47,7 @@ async function fetchEpisodeData(id: string): Promise<Subtitle[]> {
   const parsed = parseTitle(targetItem.title ?? "");
   const { data: allEpisodes, error: secondError } = await supabase
     .from(SUBTITLES_TABLE)
-    .select("*")
+    .select(SAFE_COLUMNS)
     .ilike("title", `${parsed.showName}%`)
     .order("created_at", { ascending: false });
 
@@ -198,6 +201,7 @@ function EpisodePage() {
   const poster = ep?.image_url || series?.poster || "";
   const episodeTitle = ep ? (ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`) : "";
 
+  // 🟢 Next & Previous Episode Navigation Logic
   const { prevEpisode, nextEpisode } = useMemo(() => {
     if (!series || !ep) return { prevEpisode: null, nextEpisode: null };
 
@@ -242,13 +246,12 @@ function EpisodePage() {
     "workFeaturedBy": {
       "@type": "DataDownload",
       "name": `${series.showName} S${ep.season}E${ep.episode} Sinhala Subtitle`,
-      "contentUrl": ep.download_link,
       "encodingFormat": "application/x-subrip",
       "description": `Download Sinhala Subtitle (.srt) for ${series.showName} Season ${ep.season} Episode ${ep.episode}`
     }
   } : null;
 
-  // 🟢 Google Breadcrumb Schema for Episode
+  // 🟢 Google Breadcrumb Schema
   const breadcrumbSchema = series && ep ? {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -407,22 +410,29 @@ function EpisodePage() {
                   </div>
                 )}
 
+                {/* 🟢 Ad 1: 300x250 Ad Banner */}
                 <div className="my-4">
                   <AdBanner type="300x250" />
                 </div>
 
+                {/* 🟢 Secure Blob Download Buttons */}
                 <div className="mt-7 flex flex-col sm:flex-row gap-3" data-download-zone="true">
-                  <DownloadButton downloadLink={ep.download_link} subtitleId={ep.id} label="Direct Download (.srt)" />
+                  <DownloadButton
+                    subtitleId={ep.id}
+                    title={`${series.showName} S${String(ep.season).padStart(2, "0")}E${String(ep.episode).padStart(2, "0")}`}
+                    label="Direct Download (.srt)"
+                  />
                   {(ep as any).telegram_link && (
                     <DownloadButton
-                      downloadLink={(ep as any).telegram_link}
                       subtitleId={ep.id}
+                      title={`${series.showName} S${String(ep.season).padStart(2, "0")}E${String(ep.episode).padStart(2, "0")}`}
                       label="Telegram Download"
                       variant="telegram"
                     />
                   )}
                 </div>
 
+                {/* 🟢 Next Episode & Previous Episode Navigation Bar */}
                 <div className="mt-6 flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl bg-card/60 border border-border">
                   {prevEpisode ? (
                     <Link
@@ -457,6 +467,7 @@ function EpisodePage() {
                   Opens in a new tab. Thank you for supporting PixelPopLK ❤
                 </p>
 
+                {/* 🟢 Ad 2: 160x300 Ad Banner */}
                 <div className="mt-5 flex justify-center w-full">
                   <AdBanner type="160x300" />
                 </div>
@@ -467,6 +478,7 @@ function EpisodePage() {
             </div>
           </div>
 
+          {/* 🟢 Episode SEO Tags Cloud */}
           <div className="mt-8 bg-card/40 rounded-3xl border border-border/60 p-4 sm:p-6 space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
               <Tag className="w-3.5 h-3.5 text-primary" /> Popular Searches & Tags
