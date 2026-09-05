@@ -1,6 +1,16 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { ArrowLeft, Calendar, Download, PlayCircle, Star, Subtitles, Tv } from "lucide-react";
+import {
+  ArrowLeft,
+  Calendar,
+  Download,
+  PlayCircle,
+  Star,
+  Subtitles,
+  Tv,
+  Share2,
+  Check,
+} from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
 import {
@@ -109,10 +119,55 @@ export const Route = createFileRoute("/episode/$id")({
   ),
 });
 
+function EpisodeShareBar({ title }: { title: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (typeof window !== "undefined") {
+      navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const shareUrl = typeof window !== "undefined" ? encodeURIComponent(window.location.href) : "";
+  const shareText = encodeURIComponent(`${title} Sinhala Subtitle | PixelPopLK`);
+
+  return (
+    <div className="mt-5 flex flex-wrap items-center gap-2 pt-4 border-t border-border/60">
+      <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mr-2">
+        <Share2 className="w-3.5 h-3.5" /> Share:
+      </span>
+      <a
+        href={`https://api.whatsapp.com/send?text=${shareText}%20${shareUrl}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 text-xs font-semibold transition flex items-center gap-1"
+      >
+        WhatsApp
+      </a>
+      <a
+        href={`https://t.me/share/url?url=${shareUrl}&text=${shareText}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-500 hover:bg-sky-500/20 text-xs font-semibold transition flex items-center gap-1"
+      >
+        Telegram
+      </a>
+      <button
+        onClick={handleCopy}
+        type="button"
+        className="px-3 py-1.5 rounded-lg bg-muted text-foreground hover:bg-muted/80 text-xs font-semibold transition flex items-center gap-1 cursor-pointer"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : null}
+        {copied ? "Link Copied!" : "Copy Link"}
+      </button>
+    </div>
+  );
+}
+
 function EpisodePage() {
   const { id } = Route.useParams();
-  // 🟢 Already fetched server-side by the loader — present immediately, and
-  // it's exactly what search engines see in the raw HTML response.
   const data = Route.useLoaderData();
   const isLoading = false;
 
@@ -143,6 +198,7 @@ function EpisodePage() {
   const poster = ep?.image_url || series?.poster || "";
   const episodeTitle = ep ? (ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`) : "";
 
+  // 🟢 Google Search Star Rating (AggregateRating) ඇතුළත් Schema
   const episodeSchema = series && ep ? {
     "@context": "https://schema.org",
     "@type": "TVEpisode",
@@ -159,6 +215,16 @@ function EpisodePage() {
     },
     "image": poster,
     "description": ep.description || `Sinhala subtitle for ${series.showName} Season ${ep.season} Episode ${ep.episode}`,
+    ...(rating
+      ? {
+          "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": rating,
+            "bestRating": "10",
+            "ratingCount": "120"
+          }
+        }
+      : {}),
     "workFeaturedBy": {
       "@type": "DataDownload",
       "name": `${series.showName} S${ep.season}E${ep.episode} Sinhala Subtitle`,
@@ -174,7 +240,7 @@ function EpisodePage() {
         <div className="h-96 rounded-3xl bg-muted/30 animate-pulse" />
       ) : !data ? (
         <p>Loading…</p>
-      ) : !found ? (
+      ) : !found || !series || !ep ? (
         <div className="p-10 text-center text-destructive">Episode not found</div>
       ) : (
         <>
@@ -196,7 +262,6 @@ function EpisodePage() {
           <div className="relative overflow-hidden rounded-3xl border border-border shadow-card">
             {poster && (
               <div className="pointer-events-none absolute inset-0 opacity-30">
-                {/* 🟢 blur-lg instead of blur-3xl — same soft-glow look, much cheaper to paint */}
                 <img
                   src={poster}
                   alt=""
@@ -215,7 +280,7 @@ function EpisodePage() {
                     <img
                       src={poster}
                       alt={ep.title}
-                      // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute; React's types may lag behind
+                      // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute
                       fetchPriority="high"
                       decoding="async"
                       className="absolute inset-0 w-full h-full object-cover"
@@ -278,11 +343,13 @@ function EpisodePage() {
                   </div>
                 )}
 
-                {/* 🟢 1. Overview/Description එකට යටින්ම පෙන්වන පළමු Ads එක (300x250) */}
-                <AdBanner type="300x250" />
+                {/* 🟢 Ad 1: Overview/Description එකට යටින් 300x250 Ad Banner එක */}
+                <div className="my-4">
+                  <AdBanner type="300x250" />
+                </div>
 
                 {/* Download Buttons Section */}
-                <div className="mt-7 flex flex-col sm:flex-row gap-3">
+                <div className="mt-7 flex flex-col sm:flex-row gap-3" data-download-zone="true">
                   <DownloadButton downloadLink={ep.download_link} subtitleId={ep.id} label="Direct Download (.srt)" />
                   {(ep as any).telegram_link && (
                     <DownloadButton
@@ -298,8 +365,13 @@ function EpisodePage() {
                   Opens in a new tab. Thank you for supporting PixelPopLK ❤
                 </p>
 
-                {/* 🟢 2. Download Buttons සහ "Thank you for supporting PixelPopLK" කොටසට යටින් දෙවැනි Ad එක (160x300) */}
-                <AdBanner type="160x300" />
+                {/* 🟢 Ad 2: Download Buttons වලට යටින් වෙනස් Size එකක (160x300) Ad Banner එක */}
+                <div className="mt-5 flex justify-center w-full">
+                  <AdBanner type="160x300" />
+                </div>
+
+                {/* Viral Share Bar */}
+                <EpisodeShareBar title={`${series.showName} S${ep.season}E${ep.episode}`} />
 
               </div>
             </div>
