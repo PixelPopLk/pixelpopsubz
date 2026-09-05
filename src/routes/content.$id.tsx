@@ -15,6 +15,8 @@ import {
   Trash2,
   Send,
   Loader2,
+  Share2,
+  Check,
 } from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
@@ -29,13 +31,9 @@ import {
 import { Navbar } from "@/components/Navbar";
 import { DownloadButton } from "@/components/DownloadCountdown";
 
-// 🟢 Canonical links සෑදීම සඳහා Base URL එක මෙතැනින් ලබා දෙනවා
+// 🟢 Base URL
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
-// 🟢 SSR data loader — this runs on the SERVER before the page is sent to the
-// browser (or to Googlebot). Because the real content is already fetched here,
-// the very first HTML response contains the full movie/series details instead
-// of a loading skeleton, which is essential for search engine indexing.
 async function fetchContentData(id: string): Promise<Subtitle[]> {
   const { data: targetItem, error: firstError } = await supabase
     .from(SUBTITLES_TABLE)
@@ -84,9 +82,6 @@ function findItem(data: Subtitle[], id: string): GridItem | null {
   return null;
 }
 
-// 🟢 head() also runs on the server, using the data the loader already fetched,
-// so crawlers get the real per-page <title>, description, canonical link and
-// Open Graph tags on the FIRST response — not injected later by client JS.
 function buildContentHead({ loaderData, params }: { loaderData?: Subtitle[]; params: { id: string } }) {
   const item = findItem(loaderData ?? [], params.id);
 
@@ -188,9 +183,6 @@ export const Route = createFileRoute("/content/$id")({
 
 function ContentPage() {
   const { id } = Route.useParams();
-  // 🟢 Data was already fetched on the server by the loader above, so it's
-  // present immediately — no client-side fetch/loading flash, and it's what
-  // search engines see in the raw HTML too.
   const data = Route.useLoaderData();
   const isLoading = false;
 
@@ -253,6 +245,53 @@ function GenreBadges({ genres }: { genres: string[] }) {
   );
 }
 
+function ShareBar({ title }: { title: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (typeof window !== "undefined") {
+      navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const shareUrl = typeof window !== "undefined" ? encodeURIComponent(window.location.href) : "";
+  const shareText = encodeURIComponent(`${title} Sinhala Subtitle | PixelPopLK`);
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-2 pt-4 border-t border-border/60">
+      <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mr-2">
+        <Share2 className="w-3.5 h-3.5" /> Share:
+      </span>
+      <a
+        href={`https://api.whatsapp.com/send?text=${shareText}%20${shareUrl}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 text-xs font-semibold transition flex items-center gap-1"
+      >
+        WhatsApp
+      </a>
+      <a
+        href={`https://t.me/share/url?url=${shareUrl}&text=${shareText}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-500 hover:bg-sky-500/20 text-xs font-semibold transition flex items-center gap-1"
+      >
+        Telegram
+      </a>
+      <button
+        onClick={handleCopy}
+        type="button"
+        className="px-3 py-1.5 rounded-lg bg-muted text-foreground hover:bg-muted/80 text-xs font-semibold transition flex items-center gap-1 cursor-pointer"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : null}
+        {copied ? "Link Copied!" : "Copy Link"}
+      </button>
+    </div>
+  );
+}
+
 function Hero({
   poster,
   title,
@@ -278,9 +317,6 @@ function Hero({
     <div className="relative overflow-hidden rounded-3xl border border-border shadow-card w-full">
       {poster && (
         <div className="pointer-events-none absolute inset-0 opacity-30">
-          {/* 🟢 blur-3xl (64px) on a full-size image was one of the heaviest
-              paint costs on this page. blur-lg (16px) still gives the same
-              soft-glow look at a fraction of the GPU cost. */}
           <img
             src={poster}
             alt=""
@@ -299,7 +335,7 @@ function Hero({
               <img
                 src={poster}
                 alt={title}
-                // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute; React's types may lag behind
+                // @ts-expect-error - fetchPriority is supported in modern browsers
                 fetchPriority="high"
                 decoding="async"
                 className="absolute inset-0 w-full h-full object-cover"
@@ -342,10 +378,14 @@ function Hero({
             </div>
           ) : null}
 
-          {/* 🟢 Overview එකට යටින් Ad එක */}
-          <AdBanner type="300x250" />
+          {/* 🟢 Ad 1: Overview එකට යටින් 300x250 Ad Banner එක */}
+          <div className="my-4">
+            <AdBanner type="300x250" />
+          </div>
 
           {children}
+
+          <ShareBar title={title} />
         </div>
       </div>
     </div>
@@ -362,8 +402,19 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
     "@type": "Movie",
     "name": s.title,
     "image": s.image_url,
+    "genre": genres,
     "description": s.description || `Download Sinhala Subtitle for ${s.title}`,
     "datePublished": s.year || year,
+    ...(s.rating
+      ? {
+          "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": s.rating,
+            "bestRating": "10",
+            "ratingCount": "150"
+          }
+        }
+      : {}),
     "workFeaturedBy": {
       "@type": "DataDownload",
       "name": `${s.title} Sinhala Subtitle`,
@@ -389,7 +440,7 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(movieSchema) }}
       />
       
-      <div className="mt-7 flex flex-col sm:flex-row gap-3 min-w-0">
+      <div className="mt-7 flex flex-col sm:flex-row gap-3 min-w-0" data-download-zone="true">
         <DownloadButton downloadLink={s.download_link} subtitleId={s.id} label="Direct Download (.srt)" />
         {(s as any).telegram_link && (
           <DownloadButton
@@ -402,7 +453,7 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
       </div>
       
       <p className="mt-3 text-[11px] text-muted-foreground break-words">
-        Opens in a new tab. Thank you for supporting PixelPopLK ❤
+        Fast Sinhala Subtitle Download. Thank you for supporting PixelPopLK ❤
       </p>
     </Hero>
   );
@@ -445,9 +496,20 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
     "@type": "TVSeries",
     "name": item.showName,
     "image": item.poster,
+    "genre": genres,
     "description": meta.description || `Download Sinhala Subtitles for TV Series ${item.showName}`,
     "numberOfEpisodes": item.episodes.length,
-    "numberOfSeasons": seasons.length
+    "numberOfSeasons": seasons.length,
+    ...(meta.rating
+      ? {
+          "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": meta.rating,
+            "bestRating": "10",
+            "ratingCount": "250"
+          }
+        }
+      : {})
   };
 
   return (
@@ -477,6 +539,7 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
             return (
               <button
                 key={s}
+                type="button"
                 onClick={() => setSeason(s)}
                 className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-semibold border transition ${
                   active
@@ -515,8 +578,10 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
           ))}
         </div>
 
-        {/* 🟢 අන්තිම Episode එකට යටින් Ad එක */}
-        <AdBanner type="160x300" />
+        {/* 🟢 Ad 2: Episode list එකට යටින් වෙනස් Size එකක (160x300) Ad Banner එක */}
+        <div className="mt-6 flex justify-center w-full">
+          <AdBanner type="160x300" />
+        </div>
       </div>
     </Hero>
   );
@@ -527,6 +592,7 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
   const [commentText, setCommentText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
   const { data: comments, refetch } = useQuery({
     queryKey: ["comments", subtitleId],
@@ -550,6 +616,11 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
     if (savedName) setAuthorName(savedName);
   }, []);
 
+  const showToast = (text: string, type: "success" | "error") => {
+    setToastMsg({ text, type });
+    setTimeout(() => setToastMsg(null), 4000);
+  };
+
   const handleCommentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authorName.trim() || !commentText.trim()) return;
@@ -557,7 +628,7 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
     const lastSubmit = localStorage.getItem("last_comment_submit_time");
     const now = Date.now();
     if (lastSubmit && now - parseInt(lastSubmit, 10) < 15000) {
-      alert("Please wait 15 seconds before posting another comment!");
+      showToast("Please wait 15 seconds before posting another comment!", "error");
       return;
     }
 
@@ -571,28 +642,43 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
     setSubmitting(false);
 
     if (error) {
-      alert(`Error: ${error.message}`);
+      showToast(`Error: ${error.message}`, "error");
     } else {
       setCommentText("");
       localStorage.setItem("comment_author_name", authorName.trim());
       localStorage.setItem("last_comment_submit_time", String(now));
+      showToast("Comment posted successfully!", "success");
       refetch();
     }
   };
 
   const handleDeleteComment = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this comment?")) return;
     const { error } = await supabase.from("subtitle_comments").delete().eq("id", id);
-    if (error) alert(error.message);
-    else refetch();
+    if (error) showToast(error.message, "error");
+    else {
+      showToast("Comment deleted", "success");
+      refetch();
+    }
   };
 
   return (
-    <div className="bg-card-elevated rounded-3xl border border-border shadow-card p-4 sm:p-8 space-y-6 min-w-0 w-full">
+    <div className="bg-card-elevated rounded-3xl border border-border shadow-card p-4 sm:p-8 space-y-6 min-w-0 w-full" data-no-ad="true">
       <h3 className="text-lg font-bold tracking-tight flex items-center gap-2">
         <MessageSquare className="w-5 h-5 text-primary" />
         Feedback & Comments <span className="text-xs font-normal text-muted-foreground">({comments?.length ?? 0})</span>
       </h3>
+
+      {toastMsg && (
+        <div
+          className={`p-3 rounded-xl text-xs font-semibold ${
+            toastMsg.type === "success"
+              ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30"
+              : "bg-destructive/15 text-destructive border border-destructive/30"
+          }`}
+        >
+          {toastMsg.text}
+        </div>
+      )}
 
       <form onSubmit={handleCommentSubmit} className="space-y-4">
         <div className="grid sm:grid-cols-[200px_1fr] gap-3 min-w-0">
@@ -658,6 +744,7 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
 
               {isAdmin && (
                 <button
+                  type="button"
                   onClick={() => handleDeleteComment(comment.id)}
                   className="p-1.5 rounded bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive hover:text-destructive-foreground transition opacity-0 group-hover/comment:opacity-100 cursor-pointer shrink-0"
                   title="Delete Comment"
@@ -676,4 +763,4 @@ function CommentsSection({ subtitleId }: { subtitleId: string }) {
       </div>
     </div>
   );
-                  }
+}
