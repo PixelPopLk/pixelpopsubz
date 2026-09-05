@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /manage-admin
 
 Sitemap: https://pixelpoplk.pages.dev/sitemap.xml
