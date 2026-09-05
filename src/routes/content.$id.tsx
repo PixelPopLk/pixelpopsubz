@@ -40,10 +40,13 @@ import { DownloadButton } from "@/components/DownloadCountdown";
 
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
+// 🟢 ආරක්ෂාව: download_link එක මෙතනින් select කරන්නේ නෑ (Bulk Scraping වැළැක්වීමට)
+const SAFE_COLUMNS = "id, title, year, image_url, genre, rating, description, season, episode, created_at, updated_at, telegram_link";
+
 async function fetchContentData(id: string): Promise<Subtitle[]> {
   const { data: targetItem, error: firstError } = await supabase
     .from(SUBTITLES_TABLE)
-    .select("*")
+    .select(SAFE_COLUMNS)
     .eq("id", Number(id) as any)
     .maybeSingle();
 
@@ -67,7 +70,7 @@ async function fetchContentData(id: string): Promise<Subtitle[]> {
     const parsed = parseTitle(targetItem.title ?? "");
     const { data: allEpisodes, error: secondError } = await supabase
       .from(SUBTITLES_TABLE)
-      .select("*")
+      .select(SAFE_COLUMNS)
       .ilike("title", `${parsed.showName}%`)
       .order("created_at", { ascending: false });
 
@@ -206,7 +209,7 @@ function ContentPage() {
   const yearVal = item ? (item.kind === "movie" ? item.sub.year : "") : "";
   const isSeries = item?.kind === "series";
 
-  // 🟢 Google BreadcrumbList Schema
+  // 🟢 Google Breadcrumb Schema
   const breadcrumbSchema = item ? {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -274,8 +277,10 @@ function ContentPage() {
             <SeriesView key={`series-${item.id}`} item={item} />
           )}
 
+          {/* 🟢 Related Content Section */}
           <RelatedContentSection currentItem={item} />
 
+          {/* 🟢 SEO Tags Cloud */}
           <SeoTagsCloud title={titleName} year={yearVal ? String(yearVal) : undefined} isSeries={isSeries} />
           
           <CommentsSection key={`comments-${id}`} subtitleId={id} />
@@ -446,6 +451,7 @@ function Hero({
             </div>
           ) : null}
 
+          {/* 🟢 Ad 1: Overview යටින් 300x250 Ad Banner එක */}
           <div className="my-4">
             <AdBanner type="300x250" />
           </div>
@@ -485,7 +491,6 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
     "workFeaturedBy": {
       "@type": "DataDownload",
       "name": `${s.title} Sinhala Subtitle`,
-      "contentUrl": s.download_link,
       "encodingFormat": "application/x-subrip",
       "description": `Download Sinhala Subtitle (.srt) for ${s.title}`
     }
@@ -507,12 +512,13 @@ function MovieView({ item }: { item: Extract<GridItem, { kind: "movie" }> }) {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(movieSchema) }}
       />
       
+      {/* 🟢 Secure Blob Download Button (Bucket Link එක HIDE කර Direct Download) */}
       <div className="mt-7 flex flex-col sm:flex-row gap-3 min-w-0" data-download-zone="true">
-        <DownloadButton downloadLink={s.download_link} subtitleId={s.id} label="Direct Download (.srt)" />
+        <DownloadButton subtitleId={s.id} title={s.title} label="Direct Download (.srt)" />
         {(s as any).telegram_link && (
           <DownloadButton
-            downloadLink={(s as any).telegram_link}
             subtitleId={s.id}
+            title={s.title}
             label="Telegram Download"
             variant="telegram"
           />
@@ -645,6 +651,7 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
           ))}
         </div>
 
+        {/* 🟢 Ad 2: Episode List යටින් 160x300 Ad Banner එක */}
         <div className="mt-6 flex justify-center w-full">
           <AdBanner type="160x300" />
         </div>
@@ -653,6 +660,7 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
   );
 }
 
+// 🟢 Related Content Section (තවත් Movies හෝ Series 6ක් පෙන්වීම)
 function RelatedContentSection({ currentItem }: { currentItem: GridItem }) {
   const isMovie = currentItem.kind === "movie";
 
@@ -661,7 +669,7 @@ function RelatedContentSection({ currentItem }: { currentItem: GridItem }) {
     queryFn: async () => {
       let query = supabase
         .from(SUBTITLES_TABLE)
-        .select("*")
+        .select(SAFE_COLUMNS)
         .order("created_at", { ascending: false });
 
       if (isMovie) {
@@ -721,6 +729,7 @@ function RelatedContentSection({ currentItem }: { currentItem: GridItem }) {
   );
 }
 
+// 🟢 Auto-Generated Main SEO Tags Cloud
 function SeoTagsCloud({ title, year, isSeries }: { title: string; year?: string; isSeries?: boolean }) {
   if (!title) return null;
 
