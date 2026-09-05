@@ -22,7 +22,7 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🟢 Supabase Link එක Tab එකක Open නොවී Direct File Download කරවන Function එක (Blob Method)
+// 🟢 Extension එක (.zip ද .srt ද කියලා) හරියටම හඳුනාගෙන Download කරවන Function එක
 async function triggerDirectDownload(url: string, title?: string) {
   try {
     const response = await fetch(url);
@@ -30,8 +30,22 @@ async function triggerDirectDownload(url: string, title?: string) {
     const blob = await response.blob();
     const blobUrl = window.URL.createObjectURL(blob);
 
+    // 🚀 File Extension එක Auto-Detect කරගැනීම (.zip / .rar / .srt)
+    let extension = "zip";
+    const urlPath = url.split("?")[0];
+    const match = urlPath.match(/\.([a-zA-Z0-9]+)$/);
+
+    if (match && match[1]) {
+      extension = match[1].toLowerCase();
+    } else {
+      const contentType = response.headers.get("content-type");
+      if (contentType?.includes("zip")) extension = "zip";
+      else if (contentType?.includes("rar")) extension = "rar";
+      else if (contentType?.includes("x-subrip") || contentType?.includes("text")) extension = "srt";
+    }
+
     const cleanTitle = title ? title.replace(/[/\\?%*:|"<>]/g, "-").trim() : "Subtitle";
-    const fileName = `${cleanTitle} Sinhala Sub - PixelPopLK.srt`;
+    const fileName = `${cleanTitle} Sinhala Sub - PixelPopLK.${extension}`;
 
     const a = document.createElement("a");
     a.href = blobUrl;
@@ -41,7 +55,7 @@ async function triggerDirectDownload(url: string, title?: string) {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(blobUrl);
   } catch (err) {
-    // Fallback: Fetch block වුවහොත් Supabase එකට force-download header එක යැවීම
+    // Fallback ක්‍රමය
     const forceUrl = url.includes("?") ? `${url}&download=` : `${url}?download=`;
     const fallbackA = document.createElement("a");
     fallbackA.href = forceUrl;
@@ -79,7 +93,6 @@ export function DownloadCountdownModal({
   const timerRef = useRef<any>(null);
   const isPageVisibleRef = useRef<boolean>(true);
 
-  // Verification අවසන් වූ පසු Link එක ලබා ගැනීම
   const handleComplete = async () => {
     let finalLink = downloadLink || "";
 
@@ -209,7 +222,6 @@ export function DownloadCountdownModal({
     setStatus("verifying");
   };
 
-  // 🚀 Start Download Button Click කළ විට (Direct Blob Download)
   const handleFinalDownload = async () => {
     if (!resolvedLink || !isSafeUrl(resolvedLink)) {
       alert("Invalid or unsafe download link detected.");
@@ -460,7 +472,7 @@ export function DownloadButton({
   downloadLink,
   subtitleId,
   title,
-  label = "Download Subtitle",
+  label = "Direct Download (.zip)",
   className,
   variant = "primary",
 }: {
@@ -490,7 +502,6 @@ export function DownloadButton({
     }
   }, [cacheKey]);
 
-  // දැනටමත් Unlock වී තිබේ නම් කෙලින්ම Direct File Download කිරීම
   const handleDownloadClick = async () => {
     if (isUnlocked && unlockedUrl) {
       if (isSafeUrl(unlockedUrl)) {
