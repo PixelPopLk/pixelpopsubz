@@ -17,6 +17,9 @@ import {
   Loader2,
   Share2,
   Check,
+  Tag,
+  ChevronRight,
+  Home,
 } from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
@@ -26,12 +29,15 @@ import {
   genreBadgeClass,
   splitGenres,
   parseTitle,
+  itemTitle,
+  itemPoster,
+  itemDate,
+  formatDate,
   type GridItem,
 } from "@/lib/subtitles";
 import { Navbar } from "@/components/Navbar";
 import { DownloadButton } from "@/components/DownloadCountdown";
 
-// 🟢 Base URL
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
 async function fetchContentData(id: string): Promise<Subtitle[]> {
@@ -122,7 +128,6 @@ function buildContentHead({ loaderData, params }: { loaderData?: Subtitle[]; par
     };
   }
 
-  // TV series hub page
   const s1e1 = item.episodes.find((e) => e.season === 1 && e.episode === 1) || item.episodes[0];
   const withYear = item.episodes.find((e) => e.year != null && e.year !== "") ?? item.episodes[0];
   const year =
@@ -197,8 +202,45 @@ function ContentPage() {
     return null;
   }, [data, id]);
 
+  const titleName = item ? (item.kind === "movie" ? item.sub.title : item.showName) : "";
+  const yearVal = item ? (item.kind === "movie" ? item.sub.year : "") : "";
+  const isSeries = item?.kind === "series";
+
+  // 🟢 Google BreadcrumbList Schema
+  const breadcrumbSchema = item ? {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {
+        "@type": "ListItem",
+        "position": 1,
+        "name": "Home",
+        "item": BASE_URL
+      },
+      {
+        "@type": "ListItem",
+        "position": 2,
+        "name": isSeries ? "TV Series" : "Movies",
+        "item": `${BASE_URL}/?type=${isSeries ? "series" : "movie"}`
+      },
+      {
+        "@type": "ListItem",
+        "position": 3,
+        "name": titleName,
+        "item": `${BASE_URL}/content/${item.id}`
+      }
+    ]
+  } : null;
+
   return (
     <Shell>
+      {breadcrumbSchema && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        />
+      )}
+
       {isLoading ? (
         <div className="h-96 rounded-3xl bg-muted/30 animate-pulse" />
       ) : !data ? (
@@ -207,11 +249,34 @@ function ContentPage() {
         <div className="p-10 text-center text-destructive">Content not found</div>
       ) : (
         <>
+          {/* 🟢 Breadcrumb Navigation UI */}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-4 overflow-x-auto scrollbar-hide py-1">
+            <Link to="/" className="hover:text-foreground transition flex items-center gap-1">
+              <Home className="w-3.5 h-3.5" /> Home
+            </Link>
+            <ChevronRight className="w-3 h-3 shrink-0" />
+            <Link
+              to="/"
+              search={{ type: isSeries ? "series" : "movie" }}
+              className="hover:text-foreground transition"
+            >
+              {isSeries ? "TV Series" : "Movies"}
+            </Link>
+            <ChevronRight className="w-3 h-3 shrink-0" />
+            <span className="text-foreground font-semibold truncate max-w-[200px] sm:max-w-none">
+              {titleName}
+            </span>
+          </div>
+
           {item.kind === "movie" ? (
             <MovieView key={`movie-${item.id}`} item={item} />
           ) : (
             <SeriesView key={`series-${item.id}`} item={item} />
           )}
+
+          <RelatedContentSection currentItem={item} />
+
+          <SeoTagsCloud title={titleName} year={yearVal ? String(yearVal) : undefined} isSeries={isSeries} />
           
           <CommentsSection key={`comments-${id}`} subtitleId={id} />
         </>
@@ -229,17 +294,20 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// 🟢 Clickable Genre Badges
 function GenreBadges({ genres }: { genres: string[] }) {
   if (genres.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1.5 max-w-full">
       {genres.map((g) => (
-        <span
+        <Link
           key={g}
-          className={`px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide break-all ${genreBadgeClass(g.toLowerCase())}`}
+          to="/"
+          search={{ genre: g }}
+          className={`px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide transition hover:scale-105 hover:border-primary/60 cursor-pointer ${genreBadgeClass(g.toLowerCase())}`}
         >
           {g}
-        </span>
+        </Link>
       ))}
     </div>
   );
@@ -335,7 +403,7 @@ function Hero({
               <img
                 src={poster}
                 alt={title}
-                // @ts-expect-error - fetchPriority is supported in modern browsers
+                // @ts-expect-error - fetchPriority attribute
                 fetchPriority="high"
                 decoding="async"
                 className="absolute inset-0 w-full h-full object-cover"
@@ -378,7 +446,6 @@ function Hero({
             </div>
           ) : null}
 
-          {/* 🟢 Ad 1: Overview එකට යටින් 300x250 Ad Banner එක */}
           <div className="my-4">
             <AdBanner type="300x250" />
           </div>
@@ -578,12 +645,116 @@ function SeriesView({ item }: { item: Extract<GridItem, { kind: "series" }> }) {
           ))}
         </div>
 
-        {/* 🟢 Ad 2: Episode list එකට යටින් වෙනස් Size එකක (160x300) Ad Banner එක */}
         <div className="mt-6 flex justify-center w-full">
           <AdBanner type="160x300" />
         </div>
       </div>
     </Hero>
+  );
+}
+
+function RelatedContentSection({ currentItem }: { currentItem: GridItem }) {
+  const isMovie = currentItem.kind === "movie";
+
+  const { data: relatedItems, isLoading } = useQuery({
+    queryKey: ["related-content", currentItem.id, currentItem.kind],
+    queryFn: async () => {
+      let query = supabase
+        .from(SUBTITLES_TABLE)
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (isMovie) {
+        query = query.is("season", null).limit(15);
+      } else {
+        query = query.not("season", "is", null).limit(30);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const items = buildGridItems(data ?? []);
+      return items.filter((it) => String(it.id) !== String(currentItem.id)).slice(0, 6);
+    },
+  });
+
+  if (isLoading || !relatedItems || relatedItems.length === 0) return null;
+
+  return (
+    <div className="bg-card-elevated rounded-3xl border border-border shadow-card p-4 sm:p-8 space-y-4 min-w-0 w-full">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-bold tracking-tight flex items-center gap-2">
+          {isMovie ? <Film className="w-5 h-5 text-primary" /> : <Tv className="w-5 h-5 text-primary" />}
+          {isMovie ? "More Movies You May Like" : "More TV Series You May Like"}
+        </h3>
+        <Link to="/" className="text-xs text-primary hover:underline font-semibold">
+          View All →
+        </Link>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 pt-2">
+        {relatedItems.map((it) => (
+          <Link
+            key={it.key}
+            to="/content/$id"
+            params={{ id: String(it.id) }}
+            className="group block text-left bg-card rounded-2xl overflow-hidden border border-border hover:border-primary/40 transition shadow-card"
+          >
+            <div className="relative aspect-[2/3] bg-muted overflow-hidden">
+              <img
+                src={itemPoster(it)}
+                alt={itemTitle(it)}
+                loading="lazy"
+                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+              />
+              <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-background/90 to-transparent">
+                <p className="text-[11px] font-bold text-white truncate">{itemTitle(it)}</p>
+              </div>
+            </div>
+            <div className="p-2.5">
+              <p className="text-[10px] text-muted-foreground">{formatDate(itemDate(it))}</p>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SeoTagsCloud({ title, year, isSeries }: { title: string; year?: string; isSeries?: boolean }) {
+  if (!title) return null;
+
+  const cleanTitle = title.trim();
+  const tags = [
+    `${cleanTitle} Sinhala Sub`,
+    `${cleanTitle} Sinhala Subtitles`,
+    `${cleanTitle} Sinhala Subtitle Download`,
+    `${cleanTitle} Subtitles SRT`,
+    `${cleanTitle} Sinhala Sub File`,
+    ...(year ? [`${cleanTitle} (${year}) Sinhala Sub`, `${cleanTitle} ${year} Subtitle Download`] : []),
+    ...(isSeries
+      ? [`${cleanTitle} TV Series Sinhala Sub`, `${cleanTitle} All Episodes Sinhala Subtitles`]
+      : [`${cleanTitle} Movie Sinhala Subtitle`, `Download ${cleanTitle} Sinhala Sub`]),
+  ];
+
+  return (
+    <div className="bg-card/40 rounded-3xl border border-border/60 p-4 sm:p-6 space-y-3 min-w-0 w-full">
+      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+        <Tag className="w-3.5 h-3.5 text-primary" /> Popular Searches & Tags
+      </h4>
+      <div className="flex flex-wrap gap-2">
+        {tags.map((tag) => (
+          <Link
+            key={tag}
+            to="/"
+            search={{ q: cleanTitle }}
+            className="px-2.5 py-1 rounded-lg bg-muted/60 hover:bg-muted text-[11px] text-muted-foreground hover:text-foreground border border-border/60 transition"
+          >
+            #{tag}
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }
 
