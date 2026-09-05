@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
-import { logDownload } from "@/integrations/supabase/client";
+import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, Loader2 } from "lucide-react";
+import { supabase, logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://acorntar.com/fncjyve9?key=a347a729277e7dcc5e07924adff80652";
 const ADSTERRA_URL = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
 
 const COUNTDOWN_SECONDS = 5;
 
-const getRandomAdUrl = () => Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL;
+const getRandomAdUrl = () => (Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL);
 
 export function isSafeUrl(url: string | null | undefined): boolean {
   if (!url) return false;
@@ -22,28 +22,85 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
+// 🟢 Supabase Link එක Tab එකක Open නොවී Direct File Download කරවන Function එක (Blob Method)
+async function triggerDirectDownload(url: string, title?: string) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Network response was not ok");
+    const blob = await response.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+
+    const cleanTitle = title ? title.replace(/[/\\?%*:|"<>]/g, "-").trim() : "Subtitle";
+    const fileName = `${cleanTitle} Sinhala Sub - PixelPopLK.srt`;
+
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    // Fallback: Fetch block වුවහොත් Supabase එකට force-download header එක යැවීම
+    const forceUrl = url.includes("?") ? `${url}&download=` : `${url}?download=`;
+    const fallbackA = document.createElement("a");
+    fallbackA.href = forceUrl;
+    fallbackA.setAttribute("download", "");
+    document.body.appendChild(fallbackA);
+    fallbackA.click();
+    document.body.removeChild(fallbackA);
+  }
+}
+
 interface DownloadCountdownModalProps {
-  downloadLink: string;
+  downloadLink?: string;
   subtitleId?: string | number;
+  title?: string;
   variant?: string;
   onClose: () => void;
-  onUnlockSuccess: () => void;
+  onUnlockSuccess: (link: string) => void;
 }
 
 export function DownloadCountdownModal({
   downloadLink,
   subtitleId,
+  title,
   variant = "direct",
   onClose,
   onUnlockSuccess,
 }: DownloadCountdownModalProps) {
   const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
+  const [downloading, setDownloading] = useState(false);
+  const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
   const blurTimeRef = useRef<number | null>(null);
   const accumulatedTimeRef = useRef<number>(0);
   const timerRef = useRef<any>(null);
   const isPageVisibleRef = useRef<boolean>(true);
+
+  // Verification අවසන් වූ පසු Link එක ලබා ගැනීම
+  const handleComplete = async () => {
+    let finalLink = downloadLink || "";
+
+    if (!finalLink && subtitleId) {
+      try {
+        const { data, error } = await supabase.rpc("get_single_download_link", {
+          target_id: Number(subtitleId),
+        });
+
+        if (!error && data) {
+          finalLink = variant === "telegram" ? data.telegram_link : data.download_link;
+        }
+      } catch (err) {
+        console.error("Error fetching link:", err);
+      }
+    }
+
+    setResolvedLink(finalLink);
+    setStatus("completed");
+    onUnlockSuccess(finalLink);
+  };
 
   useEffect(() => {
     if (status !== "verifying") {
@@ -71,8 +128,7 @@ export function DownloadCountdownModal({
 
       if (totalMs >= COUNTDOWN_SECONDS * 1000) {
         if (timerRef.current) clearInterval(timerRef.current);
-        setStatus("completed");
-        onUnlockSuccess();
+        handleComplete();
       }
     };
 
@@ -94,8 +150,7 @@ export function DownloadCountdownModal({
         if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
           setStatus("warning");
         } else {
-          setStatus("completed");
-          onUnlockSuccess();
+          handleComplete();
         }
       } else {
         isPageVisibleRef.current = false;
@@ -125,8 +180,7 @@ export function DownloadCountdownModal({
         if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
           setStatus("warning");
         } else {
-          setStatus("completed");
-          onUnlockSuccess();
+          handleComplete();
         }
       }
     };
@@ -141,7 +195,7 @@ export function DownloadCountdownModal({
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [status, onUnlockSuccess]);
+  }, [status]);
 
   const handleStartVerification = () => {
     const activeAdUrl = getRandomAdUrl();
@@ -155,9 +209,28 @@ export function DownloadCountdownModal({
     setStatus("verifying");
   };
 
+  // 🚀 Start Download Button Click කළ විට (Direct Blob Download)
+  const handleFinalDownload = async () => {
+    if (!resolvedLink || !isSafeUrl(resolvedLink)) {
+      alert("Invalid or unsafe download link detected.");
+      return;
+    }
+
+    setDownloading(true);
+
+    if (variant === "telegram") {
+      window.open(resolvedLink, "_blank", "noopener");
+    } else {
+      await triggerDirectDownload(resolvedLink, title);
+    }
+
+    logDownload(subtitleId, variant);
+    setDownloading(false);
+    onClose();
+  };
+
   const circumference = 2 * Math.PI * 32;
   const dashOffset = circumference * (secondsLeft / COUNTDOWN_SECONDS);
-  const safeDownloadLink = isSafeUrl(downloadLink) ? downloadLink : "#";
 
   return (
     <AnimatePresence>
@@ -196,7 +269,6 @@ export function DownloadCountdownModal({
 
           <div className="p-8 flex flex-col items-center text-center gap-5">
             {status === "idle" ? (
-              /* IDLE STATE: User ad එක click කිරීමට පෙර */
               <>
                 <div className="w-16 h-16 rounded-2xl bg-primary/15 border border-primary/30 grid place-items-center">
                   <Lock className="w-8 h-8 text-primary" />
@@ -204,15 +276,18 @@ export function DownloadCountdownModal({
                 <div>
                   <h3 className="text-base font-bold text-foreground leading-snug">
                     Unlock Your Download <br />
-                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">ඩවුන්ලෝඩ් ලින්ක් එක ලබා ගැනීමට</span>
+                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">
+                      ඩවුන්ලෝඩ් ලින්ක් එක ලබා ගැනීමට
+                    </span>
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
                     Please visit our sponsor link for just <span className="text-primary font-semibold">5 seconds</span> to unlock your file.
-                    <span className="block text-[11px] mt-1 text-muted-foreground/75">කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් එහි රැඳී සිටින්න.</span>
+                    <span className="block text-[11px] mt-1 text-muted-foreground/75">
+                      කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් එහි රැඳී සිටින්න.
+                    </span>
                   </p>
                 </div>
-                
-                {/* Visual Step Guide */}
+
                 <div className="w-full text-left bg-muted/20 p-4 rounded-2xl border border-muted/40 text-xs text-muted-foreground space-y-2">
                   <div className="flex flex-col">
                     <span><span className="font-bold text-primary">1.</span> Click "Unlock Download" below.</span>
@@ -236,7 +311,6 @@ export function DownloadCountdownModal({
                 </button>
               </>
             ) : status === "warning" ? (
-              /* WARNING STATE: වේලාව මදි වූ විට එන message එක */
               <>
                 <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 grid place-items-center">
                   <AlertTriangle className="w-8 h-8 text-amber-400 animate-pulse" />
@@ -262,7 +336,6 @@ export function DownloadCountdownModal({
                 </button>
               </>
             ) : status === "completed" ? (
-              /* COMPLETED STATE */
               <>
                 <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 grid place-items-center">
                   <CheckCircle className="w-8 h-8 text-emerald-400 animate-bounce" />
@@ -273,28 +346,27 @@ export function DownloadCountdownModal({
                     <span className="text-[11px] font-normal text-emerald-400/80 block mt-1">ඩවුන්ලෝඩ් කිරීමට සූදානම්!</span>
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                    Your secure download link has been unlocked.
-                    <span className="block text-[11px] mt-1 text-muted-foreground/80">ඔබගේ ආරක්ෂිත ඩවුන්ලෝඩ් ලින්ක් එක සාර්ථකව සක්‍රීය කර ඇත.</span>
+                    Your secure download file is ready to save.
+                    <span className="block text-[11px] mt-1 text-muted-foreground/80">
+                      ඔබගේ ආරක්ෂිත ඩවුන්ලෝඩ් ගොනුව බාගත කිරීමට සූදානම්.
+                    </span>
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 w-full">
-                  <a
-                    href={safeDownloadLink}
-                    target="_blank"
-                    rel="noopener"
-                    onClick={(e) => {
-                      if (safeDownloadLink === "#") {
-                        e.preventDefault();
-                        alert("Invalid or unsafe download link detected.");
-                      } else {
-                        logDownload(subtitleId, variant);
-                        onClose();
-                      }
-                    }}
-                    className="px-6 py-2.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full"
+                  <button
+                    disabled={downloading}
+                    onClick={handleFinalDownload}
+                    className="flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg"
                   >
-                    Start Download | ඩවුන්ලෝඩ් කරන්න
-                  </a>
+                    {downloading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Saving File... | බාගත වෙමින්...
+                      </>
+                    ) : (
+                      "Start Download | ඩවුන්ලෝඩ් කරන්න"
+                    )}
+                  </button>
                   <button
                     onClick={onClose}
                     className="px-6 py-2 rounded-full bg-muted text-muted-foreground hover:text-foreground text-sm font-medium transition cursor-pointer w-full"
@@ -304,7 +376,6 @@ export function DownloadCountdownModal({
                 </div>
               </>
             ) : (
-              /* VERIFYING (COUNTDOWN) STATE */
               <>
                 <div className="relative w-24 h-24 flex items-center justify-center">
                   <svg className="absolute inset-0 -rotate-90" width="96" height="96" viewBox="0 0 96 96">
@@ -345,7 +416,9 @@ export function DownloadCountdownModal({
                   </div>
                   <h3 className="text-base font-bold text-foreground">
                     Verifying ad view... <br />
-                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">දැන්වීම පරීක්ෂා කරමින් පවතී...</span>
+                    <span className="text-[11px] font-normal text-muted-foreground block mt-1">
+                      දැන්වීම පරීක්ෂා කරමින් පවතී...
+                    </span>
                   </h3>
                   <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
                     Please stay on the sponsor page for{" "}
@@ -386,40 +459,49 @@ export function DownloadCountdownModal({
 export function DownloadButton({
   downloadLink,
   subtitleId,
+  title,
   label = "Download Subtitle",
   className,
   variant = "primary",
 }: {
-  downloadLink: string;
+  downloadLink?: string;
   subtitleId?: string | number;
+  title?: string;
   label?: string;
   className?: string;
-  variant?: "primary" | "telegram";
+  variant?: "primary" | "direct" | "telegram";
 }) {
   const [showModal, setShowModal] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [unlockedUrl, setUnlockedUrl] = useState<string>(downloadLink || "");
+
+  const cacheKey = `unlocked_${subtitleId || downloadLink}`;
 
   useEffect(() => {
     try {
-      const key = `unlocked_${encodeURIComponent(downloadLink)}`;
-      if (sessionStorage.getItem(key) === "true") {
+      const saved = sessionStorage.getItem(cacheKey);
+      if (saved) {
         setIsUnlocked(true);
+        setUnlockedUrl(saved);
       }
     } catch {
       /* noop */
     }
-  }, [downloadLink]);
+  }, [cacheKey]);
 
-  const handleDownloadClick = () => {
-    if (isUnlocked) {
-      if (isSafeUrl(downloadLink)) {
-        try {
-          const w = window.open(downloadLink, "_blank", "noopener");
-          if (w) w.opener = null;
-        } catch {
-          /* noop */
+  // දැනටමත් Unlock වී තිබේ නම් කෙලින්ම Direct File Download කිරීම
+  const handleDownloadClick = async () => {
+    if (isUnlocked && unlockedUrl) {
+      if (isSafeUrl(unlockedUrl)) {
+        setDownloading(true);
+        if (variant === "telegram") {
+          window.open(unlockedUrl, "_blank", "noopener");
+        } else {
+          await triggerDirectDownload(unlockedUrl, title);
         }
         logDownload(subtitleId, variant);
+        setDownloading(false);
       } else {
         alert("Invalid or unsafe download link detected.");
       }
@@ -428,13 +510,13 @@ export function DownloadButton({
     }
   };
 
-  const handleUnlockSuccess = () => {
+  const handleUnlockSuccess = (link: string) => {
     try {
-      const key = `unlocked_${encodeURIComponent(downloadLink)}`;
-      sessionStorage.setItem(key, "true");
+      sessionStorage.setItem(cacheKey, link);
     } catch {
       /* noop */
     }
+    setUnlockedUrl(link);
     setIsUnlocked(true);
   };
 
@@ -446,19 +528,26 @@ export function DownloadButton({
 
   return (
     <>
-      <button onClick={handleDownloadClick} className={buttonClass}>
-        {isUnlocked ? (
+      <button onClick={handleDownloadClick} disabled={downloading} className={buttonClass}>
+        {downloading ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : isUnlocked ? (
           <CheckCircle className="w-4 h-4 text-emerald-400" />
         ) : (
           <Download className="w-4 h-4" />
         )}
-        {isUnlocked ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න" : label}
+        {downloading
+          ? "Downloading... | බාගත වෙමින්..."
+          : isUnlocked
+          ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න"
+          : label}
       </button>
 
       {showModal && (
         <DownloadCountdownModal
-          downloadLink={downloadLink}
+          downloadLink={unlockedUrl || downloadLink}
           subtitleId={subtitleId}
+          title={title}
           variant={variant}
           onClose={() => setShowModal(false)}
           onUnlockSuccess={handleUnlockSuccess}
