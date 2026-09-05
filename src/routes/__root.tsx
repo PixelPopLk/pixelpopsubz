@@ -155,60 +155,47 @@ function RootComponent() {
   const isAdminPage = location.pathname.startsWith("/manage-admin");
 
   useEffect(() => {
-    // 1. User Ad එකෙන් "Back" පැමිණි විට Auto Target පිටුවට Redirect කිරීම
-    const checkPendingNavigation = () => {
-      if (window.location.pathname.startsWith("/manage-admin")) return;
-
-      const pendingNav = sessionStorage.getItem("pending_target_url");
-      if (pendingNav) {
-        sessionStorage.removeItem("pending_target_url");
-        window.location.href = pendingNav;
-      }
-    };
-
-    checkPendingNavigation();
-    window.addEventListener("pageshow", checkPendingNavigation);
-
-    // 2. Global Click Handler
+    // Global Click Handler
     const handleGlobalClick = (event: MouseEvent) => {
-      // Admin පිටුවේ නම් නවත්වනවා
+      // 1. Admin පිටුවක නම් ad run නොවේ
       if (window.location.pathname.startsWith("/manage-admin")) return;
 
       const target = event.target as HTMLElement;
+      if (!target) return;
 
-      // 🛑 Popup Messages, Dialogs, Modals, Toasts සහ AgeGate ignore කිරීම
+      // 🛑 2. Popup Messages, Dialogs, Modals, Toasts, AgeGate සම්පූර්ණයෙන්ම ignore කිරීම (Freeze වීම වැළැක්වීම)
       const isInsidePopup = target.closest(
         '[role="dialog"], [role="alertdialog"], [aria-modal="true"], ' +
         '.modal, .dialog, .popup, [data-radix-dialog-content], ' +
         '[data-sonner-toast], [data-toast], .toast, [role="alert"], ' +
-        '.age-gate, [data-age-gate]'
+        '.age-gate, [data-age-gate], [class*="overlay"], [class*="backdrop"]'
       );
       if (isInsidePopup) return;
 
-      // Click කළ element එක <a> හෝ <button> ද කියා බැලීම
-      const clickable = target.closest("a, button") as HTMLElement | null;
+      // Click කළ element එක <a>, <button> හෝ clickable card එකක්දැයි සොයා ගැනීම
+      const clickable = target.closest("a, button, [role='button'], [data-clickable='true']") as HTMLElement | null;
       if (!clickable) return;
 
       const linkElement = clickable.closest("a") as HTMLAnchorElement | null;
       const targetUrl = linkElement ? linkElement.href : null;
 
-      // 🛑 Normal Download Buttons ignore කිරීම
+      // 🛑 3. Normal Download Buttons ignore කිරීම
       const isDownloadButton =
         clickable.hasAttribute("download") ||
         Boolean(clickable.closest("[download], [data-download]")) ||
-        (clickable.className && typeof clickable.className === "string" && /download/i.test(clickable.className)) ||
+        (typeof clickable.className === "string" && /download/i.test(clickable.className)) ||
         (clickable.id && /download/i.test(clickable.id)) ||
         (clickable.textContent && /download|බාගන්න/i.test(clickable.textContent)) ||
         (targetUrl && (/\.(srt|zip|rar|7z|sub)($|\?)/i.test(targetUrl) || /download/i.test(targetUrl)));
 
-      // 🛑 Telegram Download / Channel Buttons ignore කිරීම
+      // 🛑 4. Telegram Download / Channel Buttons ignore කිරීම
       const isTelegramButton =
         Boolean(targetUrl && /(t\.me|telegram\.me|telegram\.dog)/i.test(targetUrl)) ||
         Boolean(clickable.textContent && /telegram|ටෙලිග්‍රෑම්/i.test(clickable.textContent)) ||
-        (clickable.className && typeof clickable.className === "string" && /telegram/i.test(clickable.className)) ||
+        (typeof clickable.className === "string" && /telegram/i.test(clickable.className)) ||
         (clickable.id && /telegram/i.test(clickable.id));
 
-      // Download හෝ Telegram buttons නම් Ad එක Skip කර සාමාන්‍ය පරිදි ක්‍රියා කිරීමට ඉඩ දීම
+      // Download හෝ Telegram buttons නම් Ad එක Skip කර සාමාන්‍ය ලෙස යාමට ඉඩ දීම
       if (isDownloadButton || isTelegramButton) {
         return;
       }
@@ -218,7 +205,7 @@ function RootComponent() {
         targetUrl ||
         clickable.id ||
         clickable.getAttribute("data-id") ||
-        (clickable.innerText ? clickable.innerText.trim().slice(0, 30) : "btn");
+        (clickable.textContent ? clickable.textContent.trim().slice(0, 30) : "btn");
 
       // Cooldowns පරීක්ෂා කිරීම (තත්පර 15)
       let cooldowns: Record<string, number> = {};
@@ -231,7 +218,7 @@ function RootComponent() {
       const now = Date.now();
       const lastClickedTime = cooldowns[itemKey];
 
-      // අදාළ button/card එක තත්පර 15 ඇතුළත click කර ඇත්නම් Ad open නොකර කෙලින්ම යන්න ඉඩ දෙනවා
+      // අදාළ card එක/button එක තත්පර 15 ඇතුළත click කර ඇත්නම් Ad open කරන්නේ නෑ
       if (lastClickedTime && now - lastClickedTime < COOLDOWN_TIME) {
         return;
       }
@@ -240,22 +227,32 @@ function RootComponent() {
       cooldowns[itemKey] = now;
       sessionStorage.setItem("ad_cooldowns", JSON.stringify(cooldowns));
 
-      // Back ගැසූ විට auto ඇතුළට යාමට target link එක save කරගන්නවා
-      if (targetUrl && !targetUrl.includes(AD_URL)) {
-        sessionStorage.setItem("pending_target_url", targetUrl);
+      // 🚀 ප්‍රධාන විසඳුම:
+      // Current tab එකේ Reacher එකට හෝ Anime filter එකට යාමට ඉඩ දී, Ad එක New Tab එකකින් open කිරීම!
+      // Event එක block (preventDefault) නොකරන නිසා කිසිම button එකක් freeze නොවේ.
+      try {
+        const adWindow = window.open(AD_URL, "_blank");
+        if (adWindow) {
+          adWindow.blur();
+          window.focus();
+        }
+      } catch (e) {
+        // Pop-up block වුවහොත් fallback ක්‍රමය
+        const a = document.createElement("a");
+        a.href = AD_URL;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
       }
-
-      // Ad එකට redirect කිරීම
-      event.preventDefault();
-      event.stopPropagation();
-      window.location.href = AD_URL;
     };
 
-    document.addEventListener("click", handleGlobalClick, { capture: true });
+    // Bubble phase එකේදීම අල්ලා ගන්නා බැවින් React components වලට බාධා නොවේ
+    document.addEventListener("click", handleGlobalClick);
 
     return () => {
-      document.removeEventListener("click", handleGlobalClick, { capture: true });
-      window.removeEventListener("pageshow", checkPendingNavigation);
+      document.removeEventListener("click", handleGlobalClick);
     };
   }, [isAdminPage]);
 
