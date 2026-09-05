@@ -22,30 +22,13 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🚀 100% Safe Fast Native Download (කිසිම Regex Error එකක් නැතිව)
-function triggerFastNativeDownload(rawUrl: string, title?: string) {
+// 🚀 Fast Native Download (කිසිදු 400 Error එකක් නැතිව)
+function triggerFastNativeDownload(rawUrl: string) {
   try {
     const cleanUrl = rawUrl.split("?")[0].trim();
-    
-    // File extension එක (.zip / .rar / .srt) හඳුනාගැනීම
-    const extMatch = cleanUrl.match(/\.(zip|rar|7z|srt|sub)$/i);
-    const extension = extMatch ? extMatch[1].toLowerCase() : "zip";
-
-    // Invalid file characters ඉවත් කිරීම (Regex නැතිව safe string filter මගින්)
-    const rawTitle = title || "Subtitle";
-    const invalidChars = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"];
-    const safeTitle = rawTitle
-      .split("")
-      .filter((char) => !invalidChars.includes(char))
-      .join("")
-      .trim();
-
-    const fileName = `${safeTitle} Sinhala Sub - PixelPopLK.${extension}`;
-
-    // Native Browser Download එක trigger කිරීම
     const a = document.createElement("a");
     a.href = cleanUrl;
-    a.setAttribute("download", fileName);
+    a.setAttribute("download", "");
     a.setAttribute("target", "_self");
     document.body.appendChild(a);
     a.click();
@@ -67,7 +50,6 @@ interface DownloadCountdownModalProps {
 export function DownloadCountdownModal({
   downloadLink,
   subtitleId,
-  title,
   variant = "direct",
   onClose,
   onUnlockSuccess,
@@ -77,11 +59,10 @@ export function DownloadCountdownModal({
   const [downloadStarted, setDownloadStarted] = useState(false);
   const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
-  const blurTimeRef = useRef<number | null>(null);
-  const accumulatedTimeRef = useRef<number>(0);
   const timerRef = useRef<any>(null);
-  const isPageVisibleRef = useRef<boolean>(true);
+  const storagePrefix = `sub_ad_${subtitleId || "default"}`;
 
+  // Link එක ලබාගෙන Completed තත්ත්වයට පත් කිරීම
   const handleComplete = async () => {
     let finalLink = downloadLink || "";
 
@@ -104,103 +85,94 @@ export function DownloadCountdownModal({
     onUnlockSuccess(finalLink);
   };
 
+  // 🟢 Modal එක Open වෙද්දී කලින් Ad එක බලලා ඉවරදැයි පරීක්ෂා කිරීම (Refresh වුණත් වැඩ කරයි)
+  useEffect(() => {
+    try {
+      const startTimeStr = localStorage.getItem(storagePrefix);
+      if (startTimeStr) {
+        const elapsed = Date.now() - parseInt(startTimeStr, 10);
+        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          handleComplete();
+          return;
+        } else {
+          // තව තත්පර කිහිපයක් ඉතිරිව ඇත්නම්
+          const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
+          setSecondsLeft(remaining);
+          setStatus("warning");
+        }
+      }
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  // Verification Timer එක
   useEffect(() => {
     if (status !== "verifying") {
       if (timerRef.current) clearInterval(timerRef.current);
       return;
     }
 
-    const isVisible = document.visibilityState === "visible";
-    isPageVisibleRef.current = isVisible;
-    if (!isVisible) {
-      blurTimeRef.current = Date.now();
-    } else {
-      blurTimeRef.current = null;
-    }
+    const checkTime = () => {
+      try {
+        const startTimeStr = localStorage.getItem(storagePrefix);
+        if (!startTimeStr) return;
+        const elapsed = Date.now() - parseInt(startTimeStr, 10);
+        const remaining = Math.max(0, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
+        setSecondsLeft(remaining);
 
-    const updateTimer = () => {
-      const now = Date.now();
-      let currentSessionTime = 0;
-      if (blurTimeRef.current !== null) {
-        currentSessionTime = now - blurTimeRef.current;
-      }
-      const totalMs = accumulatedTimeRef.current + currentSessionTime;
-      const remainingSeconds = Math.max(0, COUNTDOWN_SECONDS - Math.floor(totalMs / 1000));
-      setSecondsLeft(remainingSeconds);
-
-      if (totalMs >= COUNTDOWN_SECONDS * 1000) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        handleComplete();
-      }
-    };
-
-    timerRef.current = setInterval(updateTimer, 100);
-
-    const handleVisibilityChange = () => {
-      const isVisible = document.visibilityState === "visible";
-      const now = Date.now();
-
-      if (isVisible) {
-        isPageVisibleRef.current = true;
-        if (blurTimeRef.current !== null) {
-          accumulatedTimeRef.current += now - blurTimeRef.current;
-          blurTimeRef.current = null;
-        }
-
-        if (timerRef.current) clearInterval(timerRef.current);
-
-        if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
-          setStatus("warning");
-        } else {
+        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          if (timerRef.current) clearInterval(timerRef.current);
           handleComplete();
         }
-      } else {
-        isPageVisibleRef.current = false;
-        blurTimeRef.current = now;
+      } catch {
+        /* noop */
       }
     };
 
-    const handleBlur = () => {
-      const now = Date.now();
-      if (isPageVisibleRef.current) {
-        isPageVisibleRef.current = false;
-        blurTimeRef.current = now;
-      }
-    };
+    timerRef.current = setInterval(checkTime, 200);
 
-    const handleFocus = () => {
-      const now = Date.now();
-      if (!isPageVisibleRef.current) {
-        isPageVisibleRef.current = true;
-        if (blurTimeRef.current !== null) {
-          accumulatedTimeRef.current += now - blurTimeRef.current;
-          blurTimeRef.current = null;
-        }
-
-        if (timerRef.current) clearInterval(timerRef.current);
-
-        if (accumulatedTimeRef.current < COUNTDOWN_SECONDS * 1000) {
-          setStatus("warning");
-        } else {
-          handleComplete();
+    // User නැවත tab එකට ආ විට පරීක්ෂා කිරීම
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        try {
+          const startTimeStr = localStorage.getItem(storagePrefix);
+          if (startTimeStr) {
+            const elapsed = Date.now() - parseInt(startTimeStr, 10);
+            if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+              if (timerRef.current) clearInterval(timerRef.current);
+              handleComplete();
+            } else {
+              setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+              setStatus("warning");
+            }
+          }
+        } catch {
+          /* noop */
         }
       }
     };
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("blur", handleBlur);
-    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleVisibility);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("blur", handleBlur);
-      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleVisibility);
     };
   }, [status]);
 
   const handleStartVerification = (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    // 🟢 ආරම්භ කළ වෙලාව Phone එකේ ස්ථිරව Save කරගන්නවා
+    try {
+      localStorage.setItem(storagePrefix, String(Date.now()));
+    } catch {
+      /* noop */
+    }
+
     const activeAdUrl = getRandomAdUrl();
     try {
       const w = window.open(activeAdUrl, "_blank", "noopener");
@@ -208,7 +180,8 @@ export function DownloadCountdownModal({
     } catch {
       /* noop */
     }
-    blurTimeRef.current = Date.now();
+
+    setSecondsLeft(COUNTDOWN_SECONDS);
     setStatus("verifying");
   };
 
@@ -225,7 +198,7 @@ export function DownloadCountdownModal({
     if (variant === "telegram") {
       window.open(resolvedLink.trim(), "_blank", "noopener");
     } else {
-      triggerFastNativeDownload(resolvedLink, title);
+      triggerFastNativeDownload(resolvedLink);
     }
 
     logDownload(subtitleId, variant);
@@ -480,33 +453,65 @@ export function DownloadButton({
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [unlockedUrl, setUnlockedUrl] = useState<string>(downloadLink || "");
 
-  const cacheKey = `unlocked_${subtitleId || downloadLink}`;
+  const cacheKey = `sub_unlocked_link_${subtitleId || "default"}`;
+  const statusKey = `sub_status_${subtitleId || "default"}`;
 
+  // 🟢 Page එක Reload වුණත් Phone එකේ Storage එකෙන් අඳුරගෙන කෙලින්ම කොළ පාට Button එක පෙන්වීම
   useEffect(() => {
     try {
-      const saved = sessionStorage.getItem(cacheKey);
-      if (saved) {
+      const savedLink = localStorage.getItem(cacheKey);
+      const isReady = localStorage.getItem(statusKey) === "true";
+
+      if (isReady && savedLink) {
         setIsUnlocked(true);
-        setUnlockedUrl(saved);
+        setUnlockedUrl(savedLink);
+      } else {
+        // අදාළ Subtitle එකට තත්පර 5 ගෙවිලාදැයි බැලීම
+        const startTimeStr = localStorage.getItem(`sub_ad_${subtitleId || "default"}`);
+        if (startTimeStr) {
+          const elapsed = Date.now() - parseInt(startTimeStr, 10);
+          if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+            setIsUnlocked(true);
+            localStorage.setItem(statusKey, "true");
+          }
+        }
       }
     } catch {
       /* noop */
     }
-  }, [cacheKey]);
+  }, [cacheKey, statusKey, subtitleId]);
 
-  const handleDownloadClick = (e: React.MouseEvent) => {
+  const handleDownloadClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    if (isUnlocked && unlockedUrl) {
-      if (isSafeUrl(unlockedUrl)) {
+    // Unlock වී ඇත්නම් ක්ෂණික Direct Download
+    if (isUnlocked) {
+      let finalLink = unlockedUrl || downloadLink;
+
+      if (!finalLink && subtitleId) {
+        try {
+          const { data } = await supabase.rpc("get_single_download_link", {
+            target_id: Number(subtitleId),
+          });
+          if (data) {
+            finalLink = variant === "telegram" ? data.telegram_link : data.download_link;
+            setUnlockedUrl(finalLink);
+          }
+        } catch {
+          /* noop */
+        }
+      }
+
+      if (finalLink && isSafeUrl(finalLink)) {
         if (variant === "telegram") {
-          window.open(unlockedUrl.trim(), "_blank", "noopener");
+          window.open(finalLink.trim(), "_blank", "noopener");
         } else {
-          triggerFastNativeDownload(unlockedUrl, title);
+          triggerFastNativeDownload(finalLink);
         }
         logDownload(subtitleId, variant);
       } else {
-        alert("Download link එක ලබාගැනීමේ දෝෂයක් ඇත.");
+        // Link එකක් නැත්නම් Modal එක open කර ලබා ගැනීම
+        setShowModal(true);
       }
     } else {
       setShowModal(true);
@@ -515,7 +520,8 @@ export function DownloadButton({
 
   const handleUnlockSuccess = (link: string) => {
     try {
-      sessionStorage.setItem(cacheKey, link);
+      localStorage.setItem(cacheKey, link);
+      localStorage.setItem(statusKey, "true");
     } catch {
       /* noop */
     }
@@ -524,13 +530,16 @@ export function DownloadButton({
   };
 
   const buttonClass = className ?? (
-    variant === "telegram"
+    isUnlocked
+      ? "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow-[0_4px_20px_rgba(16,185,129,0.4)] transition-all cursor-pointer active:scale-95"
+      : variant === "telegram"
       ? "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold text-sm shadow-[0_4px_15px_rgba(6,182,212,0.35)] hover:opacity-95 transition cursor-pointer"
       : "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-gradient-primary text-primary-foreground font-bold text-sm shadow-glow hover:opacity-95 transition cursor-pointer"
   );
 
   return (
     <>
+      {/* 🟢 Page එක Reload වුණත් මේ Button එක කොළ පාට වී "Download Now" ලෙස පවතී */}
       <button
         type="button"
         data-no-ad="true"
@@ -539,7 +548,7 @@ export function DownloadButton({
         className={buttonClass}
       >
         {isUnlocked ? (
-          <CheckCircle className="w-4 h-4 text-emerald-400" />
+          <CheckCircle className="w-5 h-5 text-white animate-pulse" />
         ) : (
           <Download className="w-4 h-4" />
         )}
