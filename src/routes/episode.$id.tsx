@@ -10,6 +10,9 @@ import {
   Tv,
   Share2,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  Tag,
 } from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
@@ -27,8 +30,6 @@ import { DownloadButton } from "@/components/DownloadCountdown";
 
 const BASE_URL = "https://pixelpoplk.pages.dev";
 
-// 🟢 SSR data loader — runs on the server so the real episode data is already
-// present in the very first HTML response (crawlers never see a blank shell).
 async function fetchEpisodeData(id: string): Promise<Subtitle[]> {
   const { data: targetItem, error: firstError } = await supabase
     .from(SUBTITLES_TABLE)
@@ -61,8 +62,6 @@ function findEpisode(data: Subtitle[], id: string) {
   return null;
 }
 
-// 🟢 head() runs server-side using the loader's data, so every episode gets its
-// own unique, crawlable title / description / canonical / Open Graph tags.
 function buildEpisodeHead({ loaderData, params }: { loaderData?: Subtitle[]; params: { id: string } }) {
   const found = findEpisode(loaderData ?? [], params.id);
 
@@ -198,7 +197,23 @@ function EpisodePage() {
   const poster = ep?.image_url || series?.poster || "";
   const episodeTitle = ep ? (ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`) : "";
 
-  // 🟢 Google Search Star Rating (AggregateRating) ඇතුළත් Schema
+  // 🟢 Next Episode & Previous Episode Navigation Logic
+  const { prevEpisode, nextEpisode } = useMemo(() => {
+    if (!series || !ep) return { prevEpisode: null, nextEpisode: null };
+
+    // ඔක්කොම episodes season සහ episode අංක අනුව sort කිරීම
+    const sorted = [...series.episodes].sort((a, b) => {
+      if (a.season !== b.season) return a.season - b.season;
+      return a.episode - b.episode;
+    });
+
+    const currentIndex = sorted.findIndex((e) => String(e.id) === String(ep.id));
+    return {
+      prevEpisode: currentIndex > 0 ? sorted[currentIndex - 1] : null,
+      nextEpisode: currentIndex !== -1 && currentIndex < sorted.length - 1 ? sorted[currentIndex + 1] : null,
+    };
+  }, [series, ep]);
+
   const episodeSchema = series && ep ? {
     "@context": "https://schema.org",
     "@type": "TVEpisode",
@@ -280,7 +295,7 @@ function EpisodePage() {
                     <img
                       src={poster}
                       alt={ep.title}
-                      // @ts-expect-error - fetchPriority is a valid DOM/HTML attribute
+                      // @ts-expect-error - fetchPriority attribute
                       fetchPriority="high"
                       decoding="async"
                       className="absolute inset-0 w-full h-full object-cover"
@@ -343,7 +358,7 @@ function EpisodePage() {
                   </div>
                 )}
 
-                {/* 🟢 Ad 1: Overview/Description එකට යටින් 300x250 Ad Banner එක */}
+                {/* 🟢 Ad 1: Overview යටින් 300x250 Ad Banner එක */}
                 <div className="my-4">
                   <AdBanner type="300x250" />
                 </div>
@@ -360,12 +375,43 @@ function EpisodePage() {
                     />
                   )}
                 </div>
+
+                {/* 🟢 5. Previous Episode & Next Episode Navigation Bar */}
+                <div className="mt-6 flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl bg-card/60 border border-border">
+                  {prevEpisode ? (
+                    <Link
+                      to="/episode/$id"
+                      params={{ id: String(prevEpisode.id) }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-muted hover:bg-muted/80 text-foreground transition"
+                    >
+                      <ChevronLeft className="w-4 h-4" /> Previous Ep
+                    </Link>
+                  ) : (
+                    <div />
+                  )}
+
+                  <span className="text-[11px] font-bold text-muted-foreground uppercase">
+                    S{String(ep.season).padStart(2, "0")} · E{String(ep.episode).padStart(2, "0")}
+                  </span>
+
+                  {nextEpisode ? (
+                    <Link
+                      to="/episode/$id"
+                      params={{ id: String(nextEpisode.id) }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-primary text-primary-foreground hover:opacity-90 transition shadow-glow"
+                    >
+                      Next Ep <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground font-semibold px-3 py-2">Latest Ep</span>
+                  )}
+                </div>
                 
                 <p className="mt-3 text-[11px] text-muted-foreground">
                   Opens in a new tab. Thank you for supporting PixelPopLK ❤
                 </p>
 
-                {/* 🟢 Ad 2: Download Buttons වලට යටින් වෙනස් Size එකක (160x300) Ad Banner එක */}
+                {/* 🟢 Ad 2: Download යටින් 160x300 Ad Banner එක */}
                 <div className="mt-5 flex justify-center w-full">
                   <AdBanner type="160x300" />
                 </div>
@@ -377,6 +423,33 @@ function EpisodePage() {
             </div>
           </div>
 
+          {/* 🟢 6. Episode SEO Tags Cloud */}
+          <div className="mt-8 bg-card/40 rounded-3xl border border-border/60 p-4 sm:p-6 space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <Tag className="w-3.5 h-3.5 text-primary" /> Popular Searches & Tags
+            </h4>
+            <div className="flex flex-wrap gap-2">
+              {[
+                `${series.showName} S${ep.season}E${ep.episode} Sinhala Sub`,
+                `${series.showName} S${ep.season}E${ep.episode} Sinhala Subtitles`,
+                `${series.showName} Season ${ep.season} Episode ${ep.episode} Sinhala Sub`,
+                `${series.showName} S${ep.season}E${ep.episode} Subtitle Download`,
+                `${series.showName} S${ep.season}E${ep.episode} SRT`,
+                `${series.showName} Sinhala Subtitles TV Series`,
+              ].map((tag) => (
+                <Link
+                  key={tag}
+                  to="/"
+                  search={{ q: series.showName }}
+                  className="px-2.5 py-1 rounded-lg bg-muted/60 hover:bg-muted text-[11px] text-muted-foreground hover:text-foreground border border-border/60 transition"
+                >
+                  #{tag}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* කලින් තිබූ More from this season කොටස එහෙමම තබා ඇත */}
           <OtherEpisodes series={found.series} currentId={String(ep.id)} />
         </>
       )}
