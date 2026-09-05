@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Tag,
+  Home,
 } from "lucide-react";
 
 import { supabase, SUBTITLES_TABLE, type Subtitle } from "@/integrations/supabase/client";
@@ -197,11 +198,9 @@ function EpisodePage() {
   const poster = ep?.image_url || series?.poster || "";
   const episodeTitle = ep ? (ep.epTitle || `Episode ${String(ep.episode).padStart(2, "0")}`) : "";
 
-  // 🟢 Next Episode & Previous Episode Navigation Logic
   const { prevEpisode, nextEpisode } = useMemo(() => {
     if (!series || !ep) return { prevEpisode: null, nextEpisode: null };
 
-    // ඔක්කොම episodes season සහ episode අංක අනුව sort කිරීම
     const sorted = [...series.episodes].sort((a, b) => {
       if (a.season !== b.season) return a.season - b.season;
       return a.episode - b.episode;
@@ -249,6 +248,38 @@ function EpisodePage() {
     }
   } : null;
 
+  // 🟢 Google Breadcrumb Schema for Episode
+  const breadcrumbSchema = series && ep ? {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {
+        "@type": "ListItem",
+        "position": 1,
+        "name": "Home",
+        "item": BASE_URL
+      },
+      {
+        "@type": "ListItem",
+        "position": 2,
+        "name": "TV Series",
+        "item": `${BASE_URL}/?type=series`
+      },
+      {
+        "@type": "ListItem",
+        "position": 3,
+        "name": series.showName,
+        "item": `${BASE_URL}/content/${series.id}`
+      },
+      {
+        "@type": "ListItem",
+        "position": 4,
+        "name": `S${String(ep.season).padStart(2, "0")} E${String(ep.episode).padStart(2, "0")}`,
+        "item": `${BASE_URL}/episode/${ep.id}`
+      }
+    ]
+  } : null;
+
   return (
     <EpisodeShell>
       {isLoading ? (
@@ -265,14 +296,31 @@ function EpisodePage() {
               dangerouslySetInnerHTML={{ __html: JSON.stringify(episodeSchema) }}
             />
           )}
-          
-          <Link
-            to="/content/$id"
-            params={{ id: String(series.id) }}
-            className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition mb-4"
-          >
-            <ArrowLeft className="w-4 h-4" /> Back to {series.showName}
-          </Link>
+          {breadcrumbSchema && (
+            <script
+              type="application/ld+json"
+              dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+            />
+          )}
+
+          {/* 🟢 Breadcrumb Navigation UI */}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-4 overflow-x-auto scrollbar-hide py-1">
+            <Link to="/" className="hover:text-foreground transition flex items-center gap-1">
+              <Home className="w-3.5 h-3.5" /> Home
+            </Link>
+            <ChevronRight className="w-3 h-3 shrink-0" />
+            <Link to="/" search={{ type: "series" }} className="hover:text-foreground transition">
+              TV Series
+            </Link>
+            <ChevronRight className="w-3 h-3 shrink-0" />
+            <Link to="/content/$id" params={{ id: String(series.id) }} className="hover:text-foreground transition truncate max-w-[150px]">
+              {series.showName}
+            </Link>
+            <ChevronRight className="w-3 h-3 shrink-0" />
+            <span className="text-foreground font-semibold shrink-0">
+              S{String(ep.season).padStart(2, "0")} E{String(ep.episode).padStart(2, "0")}
+            </span>
+          </div>
 
           <div className="relative overflow-hidden rounded-3xl border border-border shadow-card">
             {poster && (
@@ -312,12 +360,14 @@ function EpisodePage() {
                     S{String(ep.season).padStart(2, "0")} · E{String(ep.episode).padStart(2, "0")}
                   </span>
                   {genres.map((g) => (
-                    <span
+                    <Link
                       key={g}
-                      className={`px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide ${genreBadgeClass(g.toLowerCase())}`}
+                      to="/"
+                      search={{ genre: g }}
+                      className={`px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide transition hover:scale-105 hover:border-primary/60 cursor-pointer ${genreBadgeClass(g.toLowerCase())}`}
                     >
                       {g}
-                    </span>
+                    </Link>
                   ))}
                 </div>
 
@@ -342,7 +392,6 @@ function EpisodePage() {
                   )}
                 </div>
 
-                {/* Overview Section */}
                 {ep.description ? (
                   <div className="mt-6">
                     <h3 className="text-[11px] font-bold uppercase tracking-[0.18em] text-primary mb-2">
@@ -358,12 +407,10 @@ function EpisodePage() {
                   </div>
                 )}
 
-                {/* 🟢 Ad 1: Overview යටින් 300x250 Ad Banner එක */}
                 <div className="my-4">
                   <AdBanner type="300x250" />
                 </div>
 
-                {/* Download Buttons Section */}
                 <div className="mt-7 flex flex-col sm:flex-row gap-3" data-download-zone="true">
                   <DownloadButton downloadLink={ep.download_link} subtitleId={ep.id} label="Direct Download (.srt)" />
                   {(ep as any).telegram_link && (
@@ -376,7 +423,6 @@ function EpisodePage() {
                   )}
                 </div>
 
-                {/* 🟢 5. Previous Episode & Next Episode Navigation Bar */}
                 <div className="mt-6 flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl bg-card/60 border border-border">
                   {prevEpisode ? (
                     <Link
@@ -411,19 +457,16 @@ function EpisodePage() {
                   Opens in a new tab. Thank you for supporting PixelPopLK ❤
                 </p>
 
-                {/* 🟢 Ad 2: Download යටින් 160x300 Ad Banner එක */}
                 <div className="mt-5 flex justify-center w-full">
                   <AdBanner type="160x300" />
                 </div>
 
-                {/* Viral Share Bar */}
                 <EpisodeShareBar title={`${series.showName} S${ep.season}E${ep.episode}`} />
 
               </div>
             </div>
           </div>
 
-          {/* 🟢 6. Episode SEO Tags Cloud */}
           <div className="mt-8 bg-card/40 rounded-3xl border border-border/60 p-4 sm:p-6 space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
               <Tag className="w-3.5 h-3.5 text-primary" /> Popular Searches & Tags
@@ -449,7 +492,6 @@ function EpisodePage() {
             </div>
           </div>
 
-          {/* කලින් තිබූ More from this season කොටස එහෙමම තබා ඇත */}
           <OtherEpisodes series={found.series} currentId={String(ep.id)} />
         </>
       )}
