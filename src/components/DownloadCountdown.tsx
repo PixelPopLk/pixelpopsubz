@@ -1,46 +1,101 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
+import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, CheckCircle2, Loader2 } from "lucide-react";
 import { supabase, logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://acorntar.com/fncjyve9?key=a347a729277e7dcc5e07924adff80652";
 const ADSTERRA_URL = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
 
 const COUNTDOWN_SECONDS = 5;
-const SILENT_RELOCK_MS = 10000; // කිසිදු දැනුම්දීමකින් තොරව තත්පර 10න් Lock වේ
+const SILENT_RELOCK_MS = 10000;
+const UNLOCK_EXPIRY_MS = 15 * 60 * 1000; // විනාඩි 15කින් Expire වේ
 
 const getRandomAdUrl = () => (Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL);
 
+// Storage value obfuscation (not encryption - UX protection only)
+const encodeData = (data: string) => (typeof window !== "undefined" ? btoa(data) : data);
+const decodeData = (data: string) => (typeof window !== "undefined" ? atob(data) : data);
+
+// 🟢 1. Trusted Hosts Whitelist
+// 🔴 ආරක්ෂාව උපරිම කිරීමට "YOUR_PROJECT_SUBDOMAIN" වෙනුවට ඔබේ සැබෑ Supabase Project ID එක (උදා: "vxtqgqnxmxdtuhfvxjzf") දමන්න.
+const ALLOWED_HOSTS = [
+  "YOUR_PROJECT_SUBDOMAIN.supabase.co", // 👈 ඔබේ Supabase Project Subdomain එක මෙතැනට දාන්න
+  "t.me", 
+  "telegram.me", 
+  "telegram.dog"
+];
+
+// 🟢 exact subdomain matching (Bypass වැළැක්වීම)
+const isAllowedHost = (hostname: string) => {
+  const host = hostname.toLowerCase();
+  return ALLOWED_HOSTS.some(
+    (allowed) => host === allowed || host.endsWith(`.${allowed}`)
+  );
+};
+
+// 🟢 SSR-Safe URL Validator
 export function isSafeUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
+  if (!url || typeof window === "undefined") return false;
   try {
     const cleanUrl = url.trim();
     if (cleanUrl.startsWith("/")) return true;
     const parsed = new URL(cleanUrl);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "ipfs:";
+    
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+
+    // Hostname එක allowed ද කියා exact matching මගින් පරීක්ෂා කිරීම
+    return (
+      parsed.origin === window.location.origin ||
+      isAllowedHost(parsed.hostname)
+    );
   } catch {
     return false;
   }
 }
 
 // 🚀 Fast Native Download
-function triggerFastNativeDownload(rawUrl: string) {
+function triggerFastNativeDownload(rawUrl: string, title?: string) {
   try {
-    const cleanUrl = rawUrl.split("?")[0].trim();
+    const fullUrl = rawUrl.trim();
+    const urlObj = new URL(fullUrl);
+    
+    // .ass ඇතුළු සියලුම subtitle extensions detect කරගැනීම
+    const extMatch = urlObj.pathname.match(/\.(zip|rar|7z|srt|sub|ass)$/i);
+    const extension = extMatch ? extMatch[1].toLowerCase() : "zip";
+
+    const rawTitle = title || "Subtitle";
+    const invalidChars = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"];
+    
+    // safeTitle හි empty fallback එක "Subtitle" වේ
+    const safeTitle = rawTitle
+      .split("")
+      .filter((char) => !invalidChars.includes(char))
+      .join("")
+      .trim() || "Subtitle";
+
+    const fileName = `${safeTitle} Sinhala Sub - PixelPopLK.${extension}`;
+
+    // ?download= parameter එක Supabase Storage links වලට පමණක් එකතු කිරීම
+    const isSupabase = urlObj.hostname.endsWith(".supabase.co") || urlObj.hostname === "supabase.co";
+    if (isSupabase) {
+      urlObj.searchParams.set("download", fileName);
+    }
+    
+    const downloadUrlWithDisposition = urlObj.toString();
+
     const a = document.createElement("a");
-    a.href = cleanUrl;
-    a.setAttribute("download", "");
+    a.href = downloadUrlWithDisposition;
+    a.setAttribute("download", fileName);
     a.setAttribute("target", "_self");
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   } catch (err) {
-    window.location.href = rawUrl.split("?")[0].trim();
+    window.location.href = rawUrl.trim();
   }
 }
 
 interface DownloadCountdownModalProps {
-  downloadLink?: string;
   subtitleId?: string | number;
   title?: string;
   variant?: string;
@@ -50,8 +105,8 @@ interface DownloadCountdownModalProps {
 }
 
 export function DownloadCountdownModal({
-  downloadLink,
   subtitleId,
+  title,
   variant = "direct",
   onClose,
   onUnlockSuccess,
@@ -59,16 +114,19 @@ export function DownloadCountdownModal({
 }: DownloadCountdownModalProps) {
   const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
-  const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
+  const [downloadStarted, setDownloadStarted] = useState(false);
+  const [resolvedLink, setResolvedLink] = useState<string>("");
 
-  const timerRef = useRef<any>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
-  const storagePrefix = `sub_ad_${subtitleId || "default"}_${normalizedVariant}`;
+  const storagePrefix = `pxl_ad_${subtitleId || "def"}_${normalizedVariant}`;
 
-  const handleComplete = async () => {
-    let finalLink = downloadLink || "";
+  const handleComplete = useCallback(async () => {
+    let finalLink = "";
 
-    if (!finalLink && subtitleId) {
+    if (subtitleId) {
       try {
         const { data, error } = await supabase.rpc("get_single_download_link", {
           target_id: Number(subtitleId),
@@ -82,12 +140,19 @@ export function DownloadCountdownModal({
       }
     }
 
+    if (!finalLink || !isSafeUrl(finalLink)) {
+      alert("Download link එක ලබාගැනීමේ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.");
+      setStatus("idle");
+      return;
+    }
+
     setResolvedLink(finalLink);
     setStatus("completed");
     onUnlockSuccess(finalLink);
-  };
+  }, [subtitleId, normalizedVariant, onUnlockSuccess]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     try {
       const startTimeStr = localStorage.getItem(storagePrefix);
       if (startTimeStr) {
@@ -104,10 +169,10 @@ export function DownloadCountdownModal({
     } catch {
       /* noop */
     }
-  }, []);
+  }, [storagePrefix, handleComplete]);
 
   useEffect(() => {
-    if (status !== "verifying") {
+    if (typeof window === "undefined" || status !== "verifying") {
       if (timerRef.current) clearInterval(timerRef.current);
       return;
     }
@@ -159,11 +224,17 @@ export function DownloadCountdownModal({
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("focus", handleVisibility);
     };
-  }, [status]);
+  }, [status, storagePrefix, handleComplete]);
+
+  // Unmount වෙද්දී timeout clean කිරීම (Memory Leak prevention)
+  useEffect(() => {
+    return () => {
+      if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+    };
+  }, []);
 
   const handleStartVerification = (e: React.MouseEvent) => {
     e.stopPropagation();
-
     try {
       localStorage.setItem(storagePrefix, String(Date.now()));
     } catch {
@@ -185,22 +256,29 @@ export function DownloadCountdownModal({
   const handleFinalDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
 
+    // Double-Click Protection
+    if (downloadStarted) return;
+
     if (!resolvedLink || !isSafeUrl(resolvedLink)) {
       alert("Download link එක ලබාගැනීමේ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.");
       return;
     }
 
+    setDownloadStarted(true);
+
     if (normalizedVariant === "telegram") {
       window.open(resolvedLink.trim(), "_blank", "noopener");
     } else {
-      triggerFastNativeDownload(resolvedLink);
+      triggerFastNativeDownload(resolvedLink, title);
     }
 
     logDownload(subtitleId, normalizedVariant);
-
-    // 🟢 බාගත කළ සැණින් නිහඬව තත්පර 10ක Re-lock timer එක ක්‍රියාත්මක කිරීම
     onDownloadTriggered();
-    onClose();
+    
+    if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+    closeTimeoutRef.current = setTimeout(() => {
+      onClose();
+    }, 1500);
   };
 
   const circumference = 2 * Math.PI * 32;
@@ -246,8 +324,9 @@ export function DownloadCountdownModal({
               e.stopPropagation();
               onClose();
             }}
+            disabled={downloadStarted}
             aria-label="Close"
-            className="absolute top-4 right-4 w-8 h-8 rounded-full bg-muted/60 hover:bg-muted flex items-center justify-center transition cursor-pointer text-muted-foreground hover:text-foreground z-10"
+            className="absolute top-4 right-4 w-8 h-8 rounded-full bg-muted/60 hover:bg-muted flex items-center justify-center transition cursor-pointer text-muted-foreground hover:text-foreground z-10 disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
@@ -316,10 +395,14 @@ export function DownloadCountdownModal({
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-emerald-400">
-                    ඩවුන්ලෝඩ් කිරීමට සූදානම්!
+                    {downloadStarted ? "බාගත කිරීම ආරම්භ විය!" : "ඩවුන්ලෝඩ් කිරීමට සූදානම්!"}
                   </h3>
                   <p className="mt-2 text-sm text-foreground/90 font-medium leading-relaxed">
-                    පහත කොළපාට බටන් එක ක්ලික් කර ගොනුව බාගත කරගන්න.
+                    {downloadStarted ? (
+                      "ඔබගේ දුරකථනයේ Notification තීරුව පරීක්ෂා කරන්න."
+                    ) : (
+                      "පහත කොළපාට බටන් එක ක්ලික් කර ගොනුව බාගත කරගන්න."
+                    )}
                   </p>
                 </div>
 
@@ -328,21 +411,32 @@ export function DownloadCountdownModal({
                     type="button"
                     data-no-ad="true"
                     data-download="true"
+                    disabled={downloadStarted}
                     onClick={handleFinalDownload}
-                    className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg active:scale-98"
+                    className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg active:scale-98 disabled:opacity-80 disabled:cursor-not-allowed"
                   >
-                    <Download className="w-4 h-4 text-white" />
-                    {normalizedVariant === "telegram" ? "Open in Telegram" : "Start Download | ඩවුන්ලෝඩ් කරන්න"}
+                    {downloadStarted ? (
+                      <>
+                        <Loader2 className="w-5 h-5 text-white animate-spin" />
+                        බාගත වෙමින් පවතී...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4 text-white" />
+                        {normalizedVariant === "telegram" ? "Open in Telegram" : "Start Download | ඩවුන්ලෝඩ් කරන්න"}
+                      </>
+                    )}
                   </button>
 
                   <button
                     type="button"
                     data-no-ad="true"
+                    disabled={downloadStarted}
                     onClick={(e) => {
                       e.stopPropagation();
                       onClose();
                     }}
-                    className="px-6 py-2 rounded-full bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition cursor-pointer w-full mt-1"
+                    className="px-6 py-2 rounded-full bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition cursor-pointer w-full mt-1 disabled:opacity-50"
                   >
                     වසන්න
                   </button>
@@ -417,14 +511,12 @@ export function DownloadCountdownModal({
 }
 
 export function DownloadButton({
-  downloadLink,
   subtitleId,
   title,
   label = "Direct Download (.zip)",
   className,
   variant = "primary",
 }: {
-  downloadLink?: string;
   subtitleId?: string | number;
   title?: string;
   label?: string;
@@ -433,36 +525,38 @@ export function DownloadButton({
 }) {
   const [showModal, setShowModal] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [unlockedUrl, setUnlockedUrl] = useState<string>(downloadLink || "");
+  const [downloading, setDownloading] = useState(false);
+  const [unlockedUrl, setUnlockedUrl] = useState<string>("");
 
-  const reLockTimerRef = useRef<any>(null);
+  const reLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
   const subId = subtitleId || "default";
-  const cacheKey = `sub_unlocked_link_${subId}_${normalizedVariant}`;
-  const statusKey = `sub_status_${subId}_${normalizedVariant}`;
-  const storagePrefix = `sub_ad_${subId}_${normalizedVariant}`;
-  const lockExpiryKey = `sub_lock_expiry_${subId}_${normalizedVariant}`;
 
-  // බටන් එක නිහඬව Lock කිරීම
-  const lockButton = () => {
+  const statusKey = `pxl_stat_${subId}_${normalizedVariant}`;
+  const storagePrefix = `pxl_ad_${subId}_${normalizedVariant}`;
+  const lockExpiryKey = `pxl_exp_${subId}_${normalizedVariant}`;
+
+  const lockButton = useCallback(() => {
     setIsUnlocked(false);
     setUnlockedUrl("");
     try {
-      localStorage.removeItem(cacheKey);
-      localStorage.removeItem(statusKey);
-      localStorage.removeItem(storagePrefix);
-      localStorage.removeItem(lockExpiryKey);
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(statusKey);
+        localStorage.removeItem(storagePrefix);
+        localStorage.removeItem(lockExpiryKey);
+      }
     } catch {
       /* noop */
     }
-  };
+  }, [statusKey, storagePrefix, lockExpiryKey]);
 
-  // 🟢 Download කළ පසු කිසිදු දැනුම්දීමකින් තොරව තත්පර 10කින් නිහඬව Lock වීම
-  const startSilent10SecReLock = () => {
+  const startSilent10SecReLock = useCallback(() => {
     const expireAt = Date.now() + SILENT_RELOCK_MS;
     try {
-      localStorage.setItem(lockExpiryKey, String(expireAt));
+      if (typeof window !== "undefined") {
+        localStorage.setItem(lockExpiryKey, String(expireAt));
+      }
     } catch {
       /* noop */
     }
@@ -471,9 +565,10 @@ export function DownloadButton({
     reLockTimerRef.current = setTimeout(() => {
       lockButton();
     }, SILENT_RELOCK_MS);
-  };
+  }, [lockExpiryKey, lockButton]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     try {
       const expireAtStr = localStorage.getItem(lockExpiryKey);
       if (expireAtStr) {
@@ -490,19 +585,21 @@ export function DownloadButton({
         }
       }
 
-      const savedLink = localStorage.getItem(cacheKey);
-      const isReady = localStorage.getItem(statusKey) === "true";
-
-      if (isReady && savedLink) {
-        setIsUnlocked(true);
-        setUnlockedUrl(savedLink);
+      const statusVal = localStorage.getItem(statusKey);
+      if (statusVal) {
+        const unlockedTime = parseInt(statusVal, 10);
+        if (Date.now() - unlockedTime < UNLOCK_EXPIRY_MS) {
+          setIsUnlocked(true);
+        } else {
+          localStorage.removeItem(statusKey);
+        }
       } else {
         const startTimeStr = localStorage.getItem(storagePrefix);
         if (startTimeStr) {
           const elapsed = Date.now() - parseInt(startTimeStr, 10);
           if (elapsed >= COUNTDOWN_SECONDS * 1000) {
             setIsUnlocked(true);
-            localStorage.setItem(statusKey, "true");
+            localStorage.setItem(statusKey, String(Date.now()));
           }
         }
       }
@@ -513,14 +610,18 @@ export function DownloadButton({
     return () => {
       if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
     };
-  }, [cacheKey, statusKey, storagePrefix, lockExpiryKey]);
+  }, [statusKey, storagePrefix, lockExpiryKey, lockButton]);
 
   const handleDownloadClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    if (isUnlocked) {
-      let finalLink = unlockedUrl || downloadLink;
+    if (downloading) return;
 
+    if (isUnlocked) {
+      setDownloading(true);
+      let finalLink = unlockedUrl;
+
+      // 🟢 Click එකේදීම Supabase RPC එකෙන් link එක Fetch කර ගනී
       if (!finalLink && subtitleId) {
         try {
           const { data } = await supabase.rpc("get_single_download_link", {
@@ -539,30 +640,40 @@ export function DownloadButton({
         if (normalizedVariant === "telegram") {
           window.open(finalLink.trim(), "_blank", "noopener");
         } else {
-          triggerFastNativeDownload(finalLink);
+          triggerFastNativeDownload(finalLink, title);
         }
         logDownload(subtitleId, normalizedVariant);
-
-        // 🟢 Direct Download කළ පසු නිහඬව තත්පර 10න් ආපසු Lock වේ
         startSilent10SecReLock();
       } else {
+        alert("Download link එක ලබාගැනීමේ දෝෂයක් ඇත.");
         setShowModal(true);
       }
+      setDownloading(false);
     } else {
       setShowModal(true);
     }
   };
 
-  const handleUnlockSuccess = (link: string) => {
-    try {
-      localStorage.setItem(cacheKey, link);
-      localStorage.setItem(statusKey, "true");
-    } catch {
-      /* noop */
-    }
-    setUnlockedUrl(link);
-    setIsUnlocked(true);
-  };
+  const handleUnlockSuccess = useCallback(
+    (link: string) => {
+      if (!link || !isSafeUrl(link)) {
+        setIsUnlocked(false);
+        setUnlockedUrl("");
+        return;
+      }
+
+      try {
+        if (typeof window !== "undefined") {
+          localStorage.setItem(statusKey, String(Date.now()));
+        }
+      } catch {
+        /* noop */
+      }
+      setUnlockedUrl(link);
+      setIsUnlocked(true);
+    },
+    [statusKey]
+  );
 
   const buttonClass = className ?? (
     isUnlocked
@@ -578,20 +689,26 @@ export function DownloadButton({
         type="button"
         data-no-ad="true"
         data-download="true"
+        disabled={downloading}
         onClick={handleDownloadClick}
         className={buttonClass}
       >
-        {isUnlocked ? (
+        {downloading ? (
+          <Loader2 className="w-4 h-4 animate-spin text-white" />
+        ) : isUnlocked ? (
           <CheckCircle className="w-5 h-5 text-white" />
         ) : (
           <Download className="w-4 h-4" />
         )}
-        {isUnlocked ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න" : label}
+        {downloading
+          ? "Fetching Link... | ලින්ක් එක ලබාගනිමින්..."
+          : isUnlocked
+          ? "Download Now | දැන් ඩවුන්ලෝඩ් කරන්න"
+          : label}
       </button>
 
       {showModal && (
         <DownloadCountdownModal
-          downloadLink={unlockedUrl || downloadLink}
           subtitleId={subtitleId}
           title={title}
           variant={variant}
