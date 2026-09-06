@@ -23,19 +23,64 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🚀 Fast Native Download
-function triggerFastNativeDownload(rawUrl: string) {
+// --- localStorage helpers -------------------------------------------------
+// Every call is wrapped so a disabled/blocked storage API (private browsing,
+// locked-down webviews, etc.) never throws and breaks the flow — it just
+// behaves as if nothing was ever saved.
+function safeGet(key: string): string | null {
   try {
-    const cleanUrl = rawUrl.split("?")[0].trim();
-    const a = document.createElement("a");
-    a.href = cleanUrl;
-    a.setAttribute("download", "");
-    a.setAttribute("target", "_self");
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } catch (err) {
-    window.location.href = rawUrl.split("?")[0].trim();
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSet(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* noop */
+  }
+}
+function safeRemove(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* noop */
+  }
+}
+// Returns a valid timestamp for `key`, or null if missing/corrupted.
+// A corrupted value is deleted immediately so it can never permanently wedge
+// the unlock flow (this is what used to turn into "NaN seconds" / a stuck UI).
+function getValidTimestamp(key: string): number | null {
+  const raw = safeGet(key);
+  if (!raw) return null;
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    safeRemove(key);
+    return null;
+  }
+  return parsed;
+}
+
+// 🚀 Native download — FIXED to keep the full URL (including the query
+// string) intact. Supabase Storage links look like
+// "...file.zip?download" (or carry "&token=..." for signed URLs) — the
+// server only sends `Content-Disposition: attachment` (i.e. actually
+// downloads instead of just opening the file) when that query string is
+// present. The old code did `rawUrl.split("?")[0]`, which silently deleted
+// it and was the main reason downloads were failing.
+// Opening in a new tab also means the ad-gate page itself is never
+// navigated away from / unloaded by the download.
+function triggerFastNativeDownload(rawUrl: string) {
+  const url = rawUrl.trim();
+  try {
+    const win = window.open(url, "_blank", "noopener,noreferrer");
+    if (!win) {
+      // Popup blocked — fall back to a same-tab navigation so the file still downloads.
+      window.location.href = url;
+    }
+  } catch {
+    window.location.href = url;
   }
 }
 
@@ -62,8 +107,19 @@ export function DownloadCountdownModal({
   const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
   const timerRef = useRef<any>(null);
+  const mountedRef = useRef(true);
   const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
   const storagePrefix = `sub_ad_${subtitleId || "default"}_${normalizedVariant}`;
+
+  // Track mounted state so an in-flight async completion never sets state
+  // on an unmounted component (this is what could throw a React warning /
+  // crash if the modal was closed mid-verification).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const handleComplete = async () => {
     let finalLink = downloadLink || "";
@@ -82,29 +138,29 @@ export function DownloadCountdownModal({
       }
     }
 
+    if (!mountedRef.current) return;
     setResolvedLink(finalLink);
     setStatus("completed");
     onUnlockSuccess(finalLink);
   };
 
+  // 🟢 On every mount — including a browser-forced reload while the ad tab
+  // was open — figure out exactly where the user left off, instead of
+  // always starting at "idle". Re-runs if subtitleId/variant ever change on
+  // a reused component instance.
   useEffect(() => {
-    try {
-      const startTimeStr = localStorage.getItem(storagePrefix);
-      if (startTimeStr) {
-        const elapsed = Date.now() - parseInt(startTimeStr, 10);
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-          handleComplete();
-          return;
-        } else {
-          const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
-          setSecondsLeft(remaining);
-          setStatus("warning");
-        }
-      }
-    } catch {
-      /* noop */
+    const startTime = getValidTimestamp(storagePrefix);
+    if (startTime === null) return;
+
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+      handleComplete();
+    } else {
+      setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+      setStatus("warning");
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storagePrefix]);
 
   useEffect(() => {
     if (status !== "verifying") {
@@ -113,19 +169,15 @@ export function DownloadCountdownModal({
     }
 
     const checkTime = () => {
-      try {
-        const startTimeStr = localStorage.getItem(storagePrefix);
-        if (!startTimeStr) return;
-        const elapsed = Date.now() - parseInt(startTimeStr, 10);
-        const remaining = Math.max(0, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
-        setSecondsLeft(remaining);
+      const startTime = getValidTimestamp(storagePrefix);
+      if (startTime === null) return;
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(0, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
+      setSecondsLeft(remaining);
 
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          handleComplete();
-        }
-      } catch {
-        /* noop */
+      if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        handleComplete();
       }
     };
 
@@ -133,20 +185,15 @@ export function DownloadCountdownModal({
 
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
-        try {
-          const startTimeStr = localStorage.getItem(storagePrefix);
-          if (startTimeStr) {
-            const elapsed = Date.now() - parseInt(startTimeStr, 10);
-            if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-              if (timerRef.current) clearInterval(timerRef.current);
-              handleComplete();
-            } else {
-              setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
-              setStatus("warning");
-            }
-          }
-        } catch {
-          /* noop */
+        const startTime = getValidTimestamp(storagePrefix);
+        if (startTime === null) return;
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          handleComplete();
+        } else {
+          setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+          setStatus("warning");
         }
       }
     };
@@ -159,26 +206,51 @@ export function DownloadCountdownModal({
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("focus", handleVisibility);
     };
-  }, [status]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, storagePrefix]);
 
   const handleStartVerification = (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    try {
-      localStorage.setItem(storagePrefix, String(Date.now()));
-    } catch {
-      /* noop */
+    // 🟢 KEY FIX: never overwrite an existing start time. The old code did
+    // `localStorage.setItem(storagePrefix, String(Date.now()))` unconditionally
+    // on every click, which wiped out any progress the user had already made
+    // (e.g. they came back after 3 of the 5 seconds and hit "retry") and
+    // forced a full fresh 5-second wait every single time. That was the
+    // cause of "have to watch the ad again and again".
+    let startTime = getValidTimestamp(storagePrefix);
+    if (startTime === null) {
+      startTime = Date.now();
+      safeSet(storagePrefix, String(startTime));
+    }
+
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+      // They've already waited long enough in total — no need to send them
+      // to yet another ad tab.
+      handleComplete();
+      return;
     }
 
     const activeAdUrl = getRandomAdUrl();
+    let opened = false;
     try {
-      const w = window.open(activeAdUrl, "_blank", "noopener");
-      if (w) w.opener = null;
+      const w = window.open(activeAdUrl, "_blank", "noopener,noreferrer");
+      opened = !!w;
     } catch {
-      /* noop */
+      opened = false;
     }
 
-    setSecondsLeft(COUNTDOWN_SECONDS);
+    if (!opened) {
+      // Popup blocked: fall back to opening the ad in the current tab.
+      // Coming back via the browser's back button (or even a full reload)
+      // will correctly resume from `elapsed` above instead of restarting,
+      // thanks to the mount-effect and safe timestamp handling.
+      window.location.href = activeAdUrl;
+      return;
+    }
+
+    setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
     setStatus("verifying");
   };
 
@@ -191,14 +263,15 @@ export function DownloadCountdownModal({
     }
 
     if (normalizedVariant === "telegram") {
-      window.open(resolvedLink.trim(), "_blank", "noopener");
+      window.open(resolvedLink.trim(), "_blank", "noopener,noreferrer");
     } else {
       triggerFastNativeDownload(resolvedLink);
     }
 
     logDownload(subtitleId, normalizedVariant);
 
-    // 🟢 බාගත කළ සැණින් නිහඬව තත්පර 10ක Re-lock timer එක ක්‍රියාත්මක කිරීම
+    // 🟢 බාගත කිරීම (හෝ Telegram විවෘත කිරීම) ඇත්තටම trigger උනාට පස්සේ විතරයි
+    // නිහඬව තත්පර 10ක Re-lock timer එක ක්‍රියාත්මක වෙන්නේ.
     onDownloadTriggered();
     onClose();
   };
@@ -448,24 +521,16 @@ export function DownloadButton({
   const lockButton = () => {
     setIsUnlocked(false);
     setUnlockedUrl("");
-    try {
-      localStorage.removeItem(cacheKey);
-      localStorage.removeItem(statusKey);
-      localStorage.removeItem(storagePrefix);
-      localStorage.removeItem(lockExpiryKey);
-    } catch {
-      /* noop */
-    }
+    safeRemove(cacheKey);
+    safeRemove(statusKey);
+    safeRemove(storagePrefix);
+    safeRemove(lockExpiryKey);
   };
 
   // 🟢 Download කළ පසු කිසිදු දැනුම්දීමකින් තොරව තත්පර 10කින් නිහඬව Lock වීම
   const startSilent10SecReLock = () => {
     const expireAt = Date.now() + SILENT_RELOCK_MS;
-    try {
-      localStorage.setItem(lockExpiryKey, String(expireAt));
-    } catch {
-      /* noop */
-    }
+    safeSet(lockExpiryKey, String(expireAt));
 
     if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
     reLockTimerRef.current = setTimeout(() => {
@@ -474,45 +539,72 @@ export function DownloadButton({
   };
 
   useEffect(() => {
-    try {
-      const expireAtStr = localStorage.getItem(lockExpiryKey);
-      if (expireAtStr) {
-        const expireAt = parseInt(expireAtStr, 10);
-        if (Date.now() >= expireAt) {
-          lockButton();
-          return;
-        } else {
-          const remaining = expireAt - Date.now();
-          if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
-          reLockTimerRef.current = setTimeout(() => {
-            lockButton();
-          }, remaining);
-        }
-      }
-
-      const savedLink = localStorage.getItem(cacheKey);
-      const isReady = localStorage.getItem(statusKey) === "true";
-
-      if (isReady && savedLink) {
-        setIsUnlocked(true);
-        setUnlockedUrl(savedLink);
+    const expireAt = getValidTimestamp(lockExpiryKey);
+    if (expireAt !== null) {
+      if (Date.now() >= expireAt) {
+        lockButton();
+        return;
       } else {
-        const startTimeStr = localStorage.getItem(storagePrefix);
-        if (startTimeStr) {
-          const elapsed = Date.now() - parseInt(startTimeStr, 10);
-          if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-            setIsUnlocked(true);
-            localStorage.setItem(statusKey, "true");
+        const remaining = expireAt - Date.now();
+        if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
+        reLockTimerRef.current = setTimeout(() => {
+          lockButton();
+        }, remaining);
+      }
+    }
+
+    const savedLink = safeGet(cacheKey);
+    const isReady = safeGet(statusKey) === "true";
+
+    if (isReady && savedLink) {
+      setIsUnlocked(true);
+      setUnlockedUrl(savedLink);
+    } else {
+      const startTime = getValidTimestamp(storagePrefix);
+      if (startTime !== null) {
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          setIsUnlocked(true);
+          safeSet(statusKey, "true");
+
+          // Resolve the actual link proactively (instead of waiting for the
+          // click) so the eventual download click can fire triggerFastNativeDownload
+          // synchronously, without an `await` in between — some mobile
+          // browsers silently block window.open()/downloads that happen
+          // after an await because they no longer count as "user-initiated".
+          if (downloadLink) {
+            setUnlockedUrl(downloadLink);
+          } else if (subtitleId) {
+            supabase
+              .rpc("get_single_download_link", { target_id: Number(subtitleId) })
+              .then(({ data, error }) => {
+                if (!error && data) {
+                  const link = normalizedVariant === "telegram" ? data.telegram_link : data.download_link;
+                  if (link) {
+                    setUnlockedUrl(link);
+                    safeSet(cacheKey, link);
+                  }
+                }
+              })
+              .catch(() => {
+                /* noop — the click-time fallback below will retry */
+              });
           }
+        } else {
+          // 🟢 KEY FIX: a verification was already in progress (e.g. the
+          // browser reloaded this page in the background while the ad tab
+          // was open on mobile). Re-open the modal automatically instead of
+          // silently showing a "reset, locked" button — that's what made it
+          // look like the page had refreshed and progress was lost.
+          setShowModal(true);
         }
       }
-    } catch {
-      /* noop */
     }
 
     return () => {
       if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheKey, statusKey, storagePrefix, lockExpiryKey]);
 
   const handleDownloadClick = async (e: React.MouseEvent) => {
@@ -537,7 +629,7 @@ export function DownloadButton({
 
       if (finalLink && isSafeUrl(finalLink)) {
         if (normalizedVariant === "telegram") {
-          window.open(finalLink.trim(), "_blank", "noopener");
+          window.open(finalLink.trim(), "_blank", "noopener,noreferrer");
         } else {
           triggerFastNativeDownload(finalLink);
         }
@@ -554,12 +646,8 @@ export function DownloadButton({
   };
 
   const handleUnlockSuccess = (link: string) => {
-    try {
-      localStorage.setItem(cacheKey, link);
-      localStorage.setItem(statusKey, "true");
-    } catch {
-      /* noop */
-    }
+    safeSet(cacheKey, link);
+    safeSet(statusKey, "true");
     setUnlockedUrl(link);
     setIsUnlocked(true);
   };
