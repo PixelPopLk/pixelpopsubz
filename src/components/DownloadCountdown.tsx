@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, CheckCircle2, Loader2 } from "lucide-react";
 import { supabase, logDownload } from "@/integrations/supabase/client";
@@ -14,18 +14,17 @@ const getRandomAdUrl = () => (Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL);
 
 // Storage value obfuscation (not encryption - UX protection only)
 const encodeData = (data: string) => (typeof window !== "undefined" ? btoa(data) : data);
-const decodeData = (data: string) => (typeof window !== "undefined" ? atob(data) : data);
 
 // 🟢 1. Trusted Hosts Whitelist
-// 🔴 ආරක්ෂාව උපරිම කිරීමට "YOUR_PROJECT_SUBDOMAIN" වෙනුවට ඔබේ සැබෑ Supabase Project ID එක (උදා: "vxtqgqnxmxdtuhfvxjzf") දමන්න.
+// ආරක්ෂාව උපරිම කිරීමට "YOUR_PROJECT_SUBDOMAIN" වෙනුවට ඔබේ සැබෑ Supabase Project ID එක (උදා: "vxtqgqnxmxdtuhfvxjzf") දමන්න.
 const ALLOWED_HOSTS = [
-  "YOUR_PROJECT_SUBDOMAIN.supabase.co", // 👈 ඔබේ Supabase Project Subdomain එක මෙතැනට දාන්න
+  "YOUR_PROJECT_SUBDOMAIN.supabase.co", 
   "t.me", 
   "telegram.me", 
   "telegram.dog"
 ];
 
-// 🟢 exact subdomain matching (Bypass වැළැක්වීම)
+// exact subdomain matching (Bypass වැළැක්වීම)
 const isAllowedHost = (hostname: string) => {
   const host = hostname.toLowerCase();
   return ALLOWED_HOSTS.some(
@@ -33,7 +32,7 @@ const isAllowedHost = (hostname: string) => {
   );
 };
 
-// 🟢 SSR-Safe URL Validator
+// SSR-Safe URL Validator
 export function isSafeUrl(url: string | null | undefined): boolean {
   if (!url || typeof window === "undefined") return false;
   try {
@@ -43,7 +42,6 @@ export function isSafeUrl(url: string | null | undefined): boolean {
     
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
 
-    // Hostname එක allowed ද කියා exact matching මගින් පරීක්ෂා කිරීම
     return (
       parsed.origin === window.location.origin ||
       isAllowedHost(parsed.hostname)
@@ -53,39 +51,13 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🚀 Fast Native Download
-function triggerFastNativeDownload(rawUrl: string, title?: string) {
+// 🚀 Fast Native Download (ඔයාගේ Original `zip?download` ලින්ක් එක එහෙමම බාගත කරවයි)
+function triggerFastNativeDownload(rawUrl: string) {
   try {
     const fullUrl = rawUrl.trim();
-    const urlObj = new URL(fullUrl);
-    
-    // .ass ඇතුළු සියලුම subtitle extensions detect කරගැනීම
-    const extMatch = urlObj.pathname.match(/\.(zip|rar|7z|srt|sub|ass)$/i);
-    const extension = extMatch ? extMatch[1].toLowerCase() : "zip";
-
-    const rawTitle = title || "Subtitle";
-    const invalidChars = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"];
-    
-    // safeTitle හි empty fallback එක "Subtitle" වේ
-    const safeTitle = rawTitle
-      .split("")
-      .filter((char) => !invalidChars.includes(char))
-      .join("")
-      .trim() || "Subtitle";
-
-    const fileName = `${safeTitle} Sinhala Sub - PixelPopLK.${extension}`;
-
-    // ?download= parameter එක Supabase Storage links වලට පමණක් එකතු කිරීම
-    const isSupabase = urlObj.hostname.endsWith(".supabase.co") || urlObj.hostname === "supabase.co";
-    if (isSupabase) {
-      urlObj.searchParams.set("download", fileName);
-    }
-    
-    const downloadUrlWithDisposition = urlObj.toString();
-
     const a = document.createElement("a");
-    a.href = downloadUrlWithDisposition;
-    a.setAttribute("download", fileName);
+    a.href = fullUrl;
+    a.setAttribute("download", "");
     a.setAttribute("target", "_self");
     document.body.appendChild(a);
     a.click();
@@ -94,6 +66,18 @@ function triggerFastNativeDownload(rawUrl: string, title?: string) {
     window.location.href = rawUrl.trim();
   }
 }
+
+// 🟢 Subtitle ID එක සහ Variant එක අනුව Storage Keys සාදා ගන්නා Helper Function එක
+const getStorageKeys = (subId: string | number, variant: string) => {
+  const normalized = variant === "telegram" ? "telegram" : "direct";
+  return {
+    startKey: `pxl_start_${subId}_${normalized}`,
+    accumulatedKey: `pxl_acc_${subId}_${normalized}`,
+    statusKey: `pxl_status_${subId}_${normalized}`,
+    lockExpiryKey: `pxl_expiry_${subId}_${normalized}`,
+    normalizedVariant: normalized
+  };
+};
 
 interface DownloadCountdownModalProps {
   subtitleId?: string | number;
@@ -106,7 +90,6 @@ interface DownloadCountdownModalProps {
 
 export function DownloadCountdownModal({
   subtitleId,
-  title,
   variant = "direct",
   onClose,
   onUnlockSuccess,
@@ -120,8 +103,10 @@ export function DownloadCountdownModal({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
-  const storagePrefix = `pxl_ad_${subtitleId || "def"}_${normalizedVariant}`;
+  const { startKey, accumulatedKey, statusKey, normalizedVariant } = useMemo(
+    () => getStorageKeys(subtitleId || "default", variant || "direct"),
+    [subtitleId, variant]
+  );
 
   const handleComplete = useCallback(async () => {
     let finalLink = "";
@@ -143,34 +128,49 @@ export function DownloadCountdownModal({
     if (!finalLink || !isSafeUrl(finalLink)) {
       alert("Download link එක ලබාගැනීමේ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.");
       setStatus("idle");
+      try {
+        localStorage.removeItem(startKey);
+        localStorage.removeItem(accumulatedKey);
+      } catch {
+        /* noop */
+      }
       return;
     }
 
     setResolvedLink(finalLink);
     setStatus("completed");
     onUnlockSuccess(finalLink);
-  }, [subtitleId, normalizedVariant, onUnlockSuccess]);
+  }, [subtitleId, normalizedVariant, onUnlockSuccess, startKey, accumulatedKey]);
 
+  // Initial Verification Check
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const startTimeStr = localStorage.getItem(storagePrefix);
+      const startTimeStr = localStorage.getItem(startKey);
+      const accumulated = parseInt(localStorage.getItem(accumulatedKey) || "0", 10);
+
       if (startTimeStr) {
         const elapsed = Date.now() - parseInt(startTimeStr, 10);
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+        const totalElapsed = accumulated + elapsed;
+
+        if (totalElapsed >= COUNTDOWN_SECONDS * 1000) {
           handleComplete();
-          return;
         } else {
-          const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
+          const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(totalElapsed / 1000));
           setSecondsLeft(remaining);
           setStatus("warning");
         }
+      } else if (accumulated > 0) {
+        const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(accumulated / 1000));
+        setSecondsLeft(remaining);
+        setStatus("warning");
       }
     } catch {
       /* noop */
     }
-  }, [storagePrefix, handleComplete]);
+  }, [startKey, accumulatedKey, handleComplete]);
 
+  // 🟢 Resumable Timer Logic (Bypass වැළැක්වීම සහ timer එක නැවත එතැන සිටම ආරම්භ වීම)
   useEffect(() => {
     if (typeof window === "undefined" || status !== "verifying") {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -179,14 +179,21 @@ export function DownloadCountdownModal({
 
     const checkTime = () => {
       try {
-        const startTimeStr = localStorage.getItem(storagePrefix);
+        const startTimeStr = localStorage.getItem(startKey);
         if (!startTimeStr) return;
-        const elapsed = Date.now() - parseInt(startTimeStr, 10);
-        const remaining = Math.max(0, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
-        setSecondsLeft(remaining);
 
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+        const startTime = parseInt(startTimeStr, 10);
+        const accumulated = parseInt(localStorage.getItem(accumulatedKey) || "0", 10);
+        const elapsedCurrent = Date.now() - startTime;
+        const totalElapsed = accumulated + elapsedCurrent;
+
+        const remaining = Math.max(0, COUNTDOWN_SECONDS * 1000 - totalElapsed);
+        setSecondsLeft(Math.ceil(remaining / 1000));
+
+        if (totalElapsed >= COUNTDOWN_SECONDS * 1000) {
           if (timerRef.current) clearInterval(timerRef.current);
+          localStorage.removeItem(startKey);
+          localStorage.removeItem(accumulatedKey);
           handleComplete();
         }
       } catch {
@@ -194,19 +201,29 @@ export function DownloadCountdownModal({
       }
     };
 
-    timerRef.current = setInterval(checkTime, 200);
+    timerRef.current = setInterval(checkTime, 100);
 
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
         try {
-          const startTimeStr = localStorage.getItem(storagePrefix);
+          const startTimeStr = localStorage.getItem(startKey);
+          const accumulated = parseInt(localStorage.getItem(accumulatedKey) || "0", 10);
+
           if (startTimeStr) {
-            const elapsed = Date.now() - parseInt(startTimeStr, 10);
-            if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+            const startTime = parseInt(startTimeStr, 10);
+            const elapsed = Date.now() - startTime;
+            const totalElapsed = accumulated + elapsed;
+
+            if (totalElapsed >= COUNTDOWN_SECONDS * 1000) {
               if (timerRef.current) clearInterval(timerRef.current);
+              localStorage.removeItem(startKey);
+              localStorage.removeItem(accumulatedKey);
               handleComplete();
             } else {
-              setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+              // Return early -> save current progress to accumulated time
+              localStorage.setItem(accumulatedKey, String(totalElapsed));
+              localStorage.removeItem(startKey);
+              setSecondsLeft(Math.ceil((COUNTDOWN_SECONDS * 1000 - totalElapsed) / 1000));
               setStatus("warning");
             }
           }
@@ -224,9 +241,8 @@ export function DownloadCountdownModal({
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("focus", handleVisibility);
     };
-  }, [status, storagePrefix, handleComplete]);
+  }, [status, startKey, accumulatedKey, handleComplete]);
 
-  // Unmount වෙද්දී timeout clean කිරීම (Memory Leak prevention)
   useEffect(() => {
     return () => {
       if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
@@ -236,7 +252,7 @@ export function DownloadCountdownModal({
   const handleStartVerification = (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      localStorage.setItem(storagePrefix, String(Date.now()));
+      localStorage.setItem(startKey, String(Date.now()));
     } catch {
       /* noop */
     }
@@ -249,14 +265,12 @@ export function DownloadCountdownModal({
       /* noop */
     }
 
-    setSecondsLeft(COUNTDOWN_SECONDS);
     setStatus("verifying");
   };
 
   const handleFinalDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    // Double-Click Protection
     if (downloadStarted) return;
 
     if (!resolvedLink || !isSafeUrl(resolvedLink)) {
@@ -269,7 +283,7 @@ export function DownloadCountdownModal({
     if (normalizedVariant === "telegram") {
       window.open(resolvedLink.trim(), "_blank", "noopener");
     } else {
-      triggerFastNativeDownload(resolvedLink, title);
+      triggerFastNativeDownload(resolvedLink);
     }
 
     logDownload(subtitleId, normalizedVariant);
@@ -280,9 +294,6 @@ export function DownloadCountdownModal({
       onClose();
     }, 1500);
   };
-
-  const circumference = 2 * Math.PI * 32;
-  const dashOffset = circumference * (secondsLeft / COUNTDOWN_SECONDS);
 
   return (
     <AnimatePresence>
@@ -385,7 +396,7 @@ export function DownloadCountdownModal({
                   onClick={handleStartVerification}
                   className="px-6 py-3 rounded-full bg-gradient-primary text-primary-foreground text-sm font-bold shadow-glow hover:opacity-90 transition cursor-pointer w-full"
                 >
-                  නැවත උත්සාහ කරන්න
+                  නැවත උත්සාහ කරන්න (ඉතිරි කාලය)
                 </button>
               </>
             ) : status === "completed" ? (
@@ -530,12 +541,10 @@ export function DownloadButton({
 
   const reLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
-  const subId = subtitleId || "default";
-
-  const statusKey = `pxl_stat_${subId}_${normalizedVariant}`;
-  const storagePrefix = `pxl_ad_${subId}_${normalizedVariant}`;
-  const lockExpiryKey = `pxl_exp_${subId}_${normalizedVariant}`;
+  const { startKey, accumulatedKey, statusKey, lockExpiryKey, normalizedVariant } = useMemo(
+    () => getStorageKeys(subtitleId || "default", variant || "direct"),
+    [subtitleId, variant]
+  );
 
   const lockButton = useCallback(() => {
     setIsUnlocked(false);
@@ -545,12 +554,15 @@ export function DownloadButton({
         localStorage.removeItem(statusKey);
         localStorage.removeItem(storagePrefix);
         localStorage.removeItem(lockExpiryKey);
+        localStorage.removeItem(startKey);
+        localStorage.removeItem(accumulatedKey);
       }
     } catch {
       /* noop */
     }
-  }, [statusKey, storagePrefix, lockExpiryKey]);
+  }, [statusKey, lockExpiryKey, startKey, accumulatedKey]);
 
+  // 🟢 Download කළ පසු කිසිදු දැනුම්දීමකින් තොරව තත්පර 10කින් නිහඬව Lock වීම
   const startSilent10SecReLock = useCallback(() => {
     const expireAt = Date.now() + SILENT_RELOCK_MS;
     try {
@@ -594,13 +606,18 @@ export function DownloadButton({
           localStorage.removeItem(statusKey);
         }
       } else {
-        const startTimeStr = localStorage.getItem(storagePrefix);
+        const startTimeStr = localStorage.getItem(startKey);
+        const accumulated = parseInt(localStorage.getItem(accumulatedKey) || "0", 10);
+
         if (startTimeStr) {
           const elapsed = Date.now() - parseInt(startTimeStr, 10);
-          if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          if (accumulated + elapsed >= COUNTDOWN_SECONDS * 1000) {
             setIsUnlocked(true);
             localStorage.setItem(statusKey, String(Date.now()));
           }
+        } else if (accumulated >= COUNTDOWN_SECONDS * 1000) {
+          setIsUnlocked(true);
+          localStorage.setItem(statusKey, String(Date.now()));
         }
       }
     } catch {
@@ -610,7 +627,7 @@ export function DownloadButton({
     return () => {
       if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
     };
-  }, [statusKey, storagePrefix, lockExpiryKey, lockButton]);
+  }, [statusKey, startKey, accumulatedKey, lockExpiryKey, lockButton]);
 
   const handleDownloadClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -621,7 +638,7 @@ export function DownloadButton({
       setDownloading(true);
       let finalLink = unlockedUrl;
 
-      // 🟢 Click එකේදීම Supabase RPC එකෙන් link එක Fetch කර ගනී
+      // Click එකේදීම Supabase RPC එකෙන් link එක Fetch කර ගනී
       if (!finalLink && subtitleId) {
         try {
           const { data } = await supabase.rpc("get_single_download_link", {
@@ -640,7 +657,7 @@ export function DownloadButton({
         if (normalizedVariant === "telegram") {
           window.open(finalLink.trim(), "_blank", "noopener");
         } else {
-          triggerFastNativeDownload(finalLink, title);
+          triggerFastNativeDownload(finalLink);
         }
         logDownload(subtitleId, normalizedVariant);
         startSilent10SecReLock();
