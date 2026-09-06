@@ -9,6 +9,11 @@ const ADSTERRA_URL = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf
 const COUNTDOWN_SECONDS = 5;
 const SILENT_RELOCK_MS = 10000; // කිසිදු දැනුම්දීමකින් තොරව තත්පර 10න් Lock වේ
 
+// 🟢 FIX: short visible grace period before we auto-send the user back to
+// the ad if they returned early. This is a same-tab navigation (not a
+// popup), so it's safe to fire from a setTimeout without a fresh click.
+const AUTO_REDIRECT_GRACE_MS = 1800;
+
 const getRandomAdUrl = () => (Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL);
 
 export function isSafeUrl(url: string | null | undefined): boolean {
@@ -24,9 +29,6 @@ export function isSafeUrl(url: string | null | undefined): boolean {
 }
 
 // --- localStorage helpers -------------------------------------------------
-// Every call is wrapped so a disabled/blocked storage API (private browsing,
-// locked-down webviews, etc.) never throws and breaks the flow — it just
-// behaves as if nothing was ever saved.
 function safeGet(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -48,9 +50,6 @@ function safeRemove(key: string) {
     /* noop */
   }
 }
-// Returns a valid timestamp for `key`, or null if missing/corrupted.
-// A corrupted value is deleted immediately so it can never permanently wedge
-// the unlock flow (this is what used to turn into "NaN seconds" / a stuck UI).
 function getValidTimestamp(key: string): number | null {
   const raw = safeGet(key);
   if (!raw) return null;
@@ -62,21 +61,13 @@ function getValidTimestamp(key: string): number | null {
   return parsed;
 }
 
-// 🚀 Native download — FIXED to keep the full URL (including the query
-// string) intact. Supabase Storage links look like
-// "...file.zip?download" (or carry "&token=..." for signed URLs) — the
-// server only sends `Content-Disposition: attachment` (i.e. actually
-// downloads instead of just opening the file) when that query string is
-// present. The old code did `rawUrl.split("?")[0]`, which silently deleted
-// it and was the main reason downloads were failing.
-// Opening in a new tab also means the ad-gate page itself is never
-// navigated away from / unloaded by the download.
+// 🚀 Native download — keeps the full URL (incl. query string) intact so
+// Supabase Storage's Content-Disposition: attachment actually fires.
 function triggerFastNativeDownload(rawUrl: string) {
   const url = rawUrl.trim();
   try {
     const win = window.open(url, "_blank", "noopener,noreferrer");
     if (!win) {
-      // Popup blocked — fall back to a same-tab navigation so the file still downloads.
       window.location.href = url;
     }
   } catch {
@@ -104,16 +95,15 @@ export function DownloadCountdownModal({
 }: DownloadCountdownModalProps) {
   const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
+  const [redirectIn, setRedirectIn] = useState(0);
   const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
-  const timerRef = useRef<any>(null);
+  const tickTimerRef = useRef<any>(null);
+  const redirectTimerRef = useRef<any>(null);
   const mountedRef = useRef(true);
   const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
   const storagePrefix = `sub_ad_${subtitleId || "default"}_${normalizedVariant}`;
 
-  // Track mounted state so an in-flight async completion never sets state
-  // on an unmounted component (this is what could throw a React warning /
-  // crash if the modal was closed mid-verification).
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -144,80 +134,14 @@ export function DownloadCountdownModal({
     onUnlockSuccess(finalLink);
   };
 
-  // 🟢 On every mount — including a browser-forced reload while the ad tab
-  // was open — figure out exactly where the user left off, instead of
-  // always starting at "idle". Re-runs if subtitleId/variant ever change on
-  // a reused component instance.
-  useEffect(() => {
-    const startTime = getValidTimestamp(storagePrefix);
-    if (startTime === null) return;
-
-    const elapsed = Date.now() - startTime;
-    if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-      handleComplete();
-    } else {
-      setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
-      setStatus("warning");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storagePrefix]);
-
-  useEffect(() => {
-    if (status !== "verifying") {
-      if (timerRef.current) clearInterval(timerRef.current);
-      return;
-    }
-
-    const checkTime = () => {
-      const startTime = getValidTimestamp(storagePrefix);
-      if (startTime === null) return;
-      const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
-      setSecondsLeft(remaining);
-
-      if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        handleComplete();
-      }
-    };
-
-    timerRef.current = setInterval(checkTime, 200);
-
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        const startTime = getValidTimestamp(storagePrefix);
-        if (startTime === null) return;
-        const elapsed = Date.now() - startTime;
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          handleComplete();
-        } else {
-          setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
-          setStatus("warning");
-        }
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("focus", handleVisibility);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("focus", handleVisibility);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, storagePrefix]);
-
-  const handleStartVerification = (e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    // 🟢 KEY FIX: never overwrite an existing start time. The old code did
-    // `localStorage.setItem(storagePrefix, String(Date.now()))` unconditionally
-    // on every click, which wiped out any progress the user had already made
-    // (e.g. they came back after 3 of the 5 seconds and hit "retry") and
-    // forced a full fresh 5-second wait every single time. That was the
-    // cause of "have to watch the ad again and again".
+  // 🟢 Opens the ad as a SAME-TAB navigation (never window.open for the ad
+  // itself). This is the key mobile fix: window.open("_blank") on phones is
+  // frequently either (a) blocked as a popup, or (b) opened as a real
+  // background tab whose JS timers get throttled/frozen, so the original
+  // tab never reliably learns the user came back. A plain top-level
+  // navigation has none of those problems and is never blocked, even when
+  // triggered automatically (see the auto-redirect effect below).
+  const goToAd = () => {
     let startTime = getValidTimestamp(storagePrefix);
     if (startTime === null) {
       startTime = Date.now();
@@ -226,32 +150,104 @@ export function DownloadCountdownModal({
 
     const elapsed = Date.now() - startTime;
     if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-      // They've already waited long enough in total — no need to send them
-      // to yet another ad tab.
       handleComplete();
-      return;
-    }
-
-    const activeAdUrl = getRandomAdUrl();
-    let opened = false;
-    try {
-      const w = window.open(activeAdUrl, "_blank", "noopener,noreferrer");
-      opened = !!w;
-    } catch {
-      opened = false;
-    }
-
-    if (!opened) {
-      // Popup blocked: fall back to opening the ad in the current tab.
-      // Coming back via the browser's back button (or even a full reload)
-      // will correctly resume from `elapsed` above instead of restarting,
-      // thanks to the mount-effect and safe timestamp handling.
-      window.location.href = activeAdUrl;
       return;
     }
 
     setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
     setStatus("verifying");
+    window.location.href = getRandomAdUrl();
+  };
+
+  // 🟢 Single source of truth for "where is the user in the flow now",
+  // called from every possible re-entry point: first mount, tab regains
+  // focus/visibility, AND `pageshow` — which is what actually fires when a
+  // page is restored from the back/forward cache after the user presses
+  // the phone's back button from the ad page. That `pageshow` case is what
+  // was missing before, and is the main reason the button used to get
+  // stuck instead of turning into "Start Download" after the wait was over.
+  const resync = () => {
+    const startTime = getValidTimestamp(storagePrefix);
+    if (startTime === null) return;
+
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+      if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      handleComplete();
+    } else {
+      setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+      setStatus("warning");
+    }
+  };
+
+  useEffect(() => {
+    resync();
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resync();
+    };
+    const onFocus = () => resync();
+    const onPageShow = () => resync();
+
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onPageShow);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storagePrefix]);
+
+  // 🟢 While on the "you came back early" screen: keep the remaining wait
+  // time ticking live, and automatically send the user back to the ad
+  // after a short, visible grace period — they don't have to tap anything,
+  // but a manual button is still shown as a fallback.
+  useEffect(() => {
+    if (status !== "warning") {
+      if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      return;
+    }
+
+    tickTimerRef.current = setInterval(() => {
+      const startTime = getValidTimestamp(storagePrefix);
+      if (startTime === null) return;
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+        if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+        handleComplete();
+      } else {
+        setSecondsLeft(Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000)));
+      }
+    }, 200);
+
+    let graceRemaining = AUTO_REDIRECT_GRACE_MS;
+    setRedirectIn(Math.ceil(graceRemaining / 1000));
+    const graceTick = setInterval(() => {
+      graceRemaining -= 200;
+      setRedirectIn(Math.max(0, Math.ceil(graceRemaining / 1000)));
+    }, 200);
+
+    redirectTimerRef.current = setTimeout(() => {
+      clearInterval(graceTick);
+      goToAd();
+    }, AUTO_REDIRECT_GRACE_MS);
+
+    return () => {
+      if (tickTimerRef.current) clearInterval(tickTimerRef.current);
+      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      clearInterval(graceTick);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, storagePrefix]);
+
+  const handleStartVerification = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    goToAd();
   };
 
   const handleFinalDownload = (e: React.MouseEvent) => {
@@ -270,8 +266,9 @@ export function DownloadCountdownModal({
 
     logDownload(subtitleId, normalizedVariant);
 
-    // 🟢 බාගත කිරීම (හෝ Telegram විවෘත කිරීම) ඇත්තටම trigger උනාට පස්සේ විතරයි
-    // නිහඬව තත්පර 10ක Re-lock timer එක ක්‍රියාත්මක වෙන්නේ.
+    // 🟢 බාගත කිරීම trigger උනාට පස්සේ විතරයි නිහඬව තත්පර 10ක Re-lock timer එක
+    // ක්‍රියාත්මක වෙන්නේ. මෙය click-එකෙන්ම fire වෙන නිසා window.open (popup)
+    // භාවිතා කිරීම මෙතනට සම්පූර්ණයෙන්ම ආරක්ෂිතයි.
     onDownloadTriggered();
     onClose();
   };
@@ -342,7 +339,7 @@ export function DownloadCountdownModal({
                       කරුණාකර පහත බටන් එක ක්ලික් කර තත්පර 5ක් රැදීසිට ආපහු මෙතනට එන්න.
                     </p>
                     <p className="text-amber-400 text-xs font-bold">
-                      (ඇඩ් එකෙන් බැක් වෙන්න.)
+                      (ඇඩ් එකෙන් Back බටනයෙන් ආපහු එන්න.)
                     </p>
                     <p className="text-emerald-400 text-xs font-bold">
                       Start Download කියලා කොළපාට Download Button එකක් එයි.
@@ -366,11 +363,13 @@ export function DownloadCountdownModal({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-amber-400">
-                    තහවුරු කිරීම නැවතී ඇත!
+                    ඔබ ඉක්මනින් ආපසු පැමිණ ඇත!
                   </h3>
                   <p className="mt-2 text-sm text-foreground/90 leading-relaxed font-medium">
-                    ඔබ නියමිත කාලයට පෙර ආපසු පැමිණ ඇත! <br />
-                    කරුණාකර තව <span className="text-amber-400 font-bold text-base">තත්පර {secondsLeft}ක්</span> අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
+                    Download එක සක්‍රිය කිරීමට තව <span className="text-amber-400 font-bold text-base">තත්පර {secondsLeft}ක්</span> අවශ්‍යයි.
+                  </p>
+                  <p className="mt-3 text-xs text-muted-foreground font-semibold">
+                    තත්පර {redirectIn}කින් ඔබව ස්වයංක්‍රීයව නැවත Ad පිටුවට යොමු කරයි...
                   </p>
                 </div>
                 <button
@@ -379,7 +378,7 @@ export function DownloadCountdownModal({
                   onClick={handleStartVerification}
                   className="px-6 py-3 rounded-full bg-gradient-primary text-primary-foreground text-sm font-bold shadow-glow hover:opacity-90 transition cursor-pointer w-full"
                 >
-                  නැවත උත්සාහ කරන්න
+                  දැන්ම Ad පිටුවට යන්න
                 </button>
               </>
             ) : status === "completed" ? (
@@ -455,10 +454,11 @@ export function DownloadCountdownModal({
 
                 <div>
                   <h3 className="text-base font-bold text-foreground">
-                    දැන්වීම පරීක්ෂා කරමින් පවතී...
+                    Ad පිටුවට යොමු කරමින්...
                   </h3>
                   <p className="mt-2 text-sm text-foreground/85 font-medium leading-relaxed">
-                    කරුණාකර තව <span className="text-primary font-bold">{secondsLeft} තත්පරයක්</span> අනුග්‍රාහක පිටුවේ රැඳී සිටින්න.
+                    ඇඩ් එකේ තත්පර <span className="text-primary font-bold">{secondsLeft}ක්</span> රැඳී{" "}
+                    <span className="text-primary font-bold">Back</span> බටනයෙන් ආපසු එන්න.
                   </p>
                 </div>
 
@@ -471,15 +471,6 @@ export function DownloadCountdownModal({
                     }}
                   />
                 </div>
-
-                <button
-                  type="button"
-                  data-no-ad="true"
-                  onClick={handleStartVerification}
-                  className="text-xs text-primary/90 hover:text-primary underline cursor-pointer"
-                >
-                  පිටුව වැසුණාද? නැවත විවෘත කරන්න
-                </button>
               </>
             )}
           </div>
@@ -517,7 +508,6 @@ export function DownloadButton({
   const storagePrefix = `sub_ad_${subId}_${normalizedVariant}`;
   const lockExpiryKey = `sub_lock_expiry_${subId}_${normalizedVariant}`;
 
-  // බටන් එක නිහඬව Lock කිරීම
   const lockButton = () => {
     setIsUnlocked(false);
     setUnlockedUrl("");
@@ -527,7 +517,6 @@ export function DownloadButton({
     safeRemove(lockExpiryKey);
   };
 
-  // 🟢 Download කළ පසු කිසිදු දැනුම්දීමකින් තොරව තත්පර 10කින් නිහඬව Lock වීම
   const startSilent10SecReLock = () => {
     const expireAt = Date.now() + SILENT_RELOCK_MS;
     safeSet(lockExpiryKey, String(expireAt));
@@ -538,7 +527,11 @@ export function DownloadButton({
     }, SILENT_RELOCK_MS);
   };
 
-  useEffect(() => {
+  // 🟢 Single resync function, called from mount AND from every event that
+  // can signal "the user came back to this page" — including `pageshow`
+  // for the mobile back-button/bfcache-restore case that visibilitychange
+  // and focus alone don't reliably cover.
+  const resyncButtonState = () => {
     const expireAt = getValidTimestamp(lockExpiryKey);
     if (expireAt !== null) {
       if (Date.now() >= expireAt) {
@@ -559,50 +552,62 @@ export function DownloadButton({
     if (isReady && savedLink) {
       setIsUnlocked(true);
       setUnlockedUrl(savedLink);
-    } else {
-      const startTime = getValidTimestamp(storagePrefix);
-      if (startTime !== null) {
-        const elapsed = Date.now() - startTime;
-        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
-          setIsUnlocked(true);
-          safeSet(statusKey, "true");
+      return;
+    }
 
-          // Resolve the actual link proactively (instead of waiting for the
-          // click) so the eventual download click can fire triggerFastNativeDownload
-          // synchronously, without an `await` in between — some mobile
-          // browsers silently block window.open()/downloads that happen
-          // after an await because they no longer count as "user-initiated".
-          if (downloadLink) {
-            setUnlockedUrl(downloadLink);
-          } else if (subtitleId) {
-            supabase
-              .rpc("get_single_download_link", { target_id: Number(subtitleId) })
-              .then(({ data, error }) => {
-                if (!error && data) {
-                  const link = normalizedVariant === "telegram" ? data.telegram_link : data.download_link;
-                  if (link) {
-                    setUnlockedUrl(link);
-                    safeSet(cacheKey, link);
-                  }
+    const startTime = getValidTimestamp(storagePrefix);
+    if (startTime !== null) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+        setIsUnlocked(true);
+        safeSet(statusKey, "true");
+
+        if (downloadLink) {
+          setUnlockedUrl(downloadLink);
+        } else if (subtitleId) {
+          supabase
+            .rpc("get_single_download_link", { target_id: Number(subtitleId) })
+            .then(({ data, error }) => {
+              if (!error && data) {
+                const link = normalizedVariant === "telegram" ? data.telegram_link : data.download_link;
+                if (link) {
+                  setUnlockedUrl(link);
+                  safeSet(cacheKey, link);
                 }
-              })
-              .catch(() => {
-                /* noop — the click-time fallback below will retry */
-              });
-          }
-        } else {
-          // 🟢 KEY FIX: a verification was already in progress (e.g. the
-          // browser reloaded this page in the background while the ad tab
-          // was open on mobile). Re-open the modal automatically instead of
-          // silently showing a "reset, locked" button — that's what made it
-          // look like the page had refreshed and progress was lost.
-          setShowModal(true);
+              }
+            })
+            .catch(() => {
+              /* noop — click-time fallback will retry */
+            });
         }
+      } else {
+        // 🟢 Verification already in progress (user came back early, or the
+        // page reloaded/restored from bfcache). Re-open the modal so it can
+        // show the live remaining time and auto-redirect — never leave the
+        // button looking "locked" while progress is actually saved.
+        setShowModal(true);
       }
     }
+  };
+
+  useEffect(() => {
+    resyncButtonState();
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resyncButtonState();
+    };
+    const onFocus = () => resyncButtonState();
+    const onPageShow = () => resyncButtonState();
+
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onPageShow);
 
     return () => {
       if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onPageShow);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheKey, statusKey, storagePrefix, lockExpiryKey]);
@@ -634,8 +639,6 @@ export function DownloadButton({
           triggerFastNativeDownload(finalLink);
         }
         logDownload(subtitleId, normalizedVariant);
-
-        // 🟢 Direct Download කළ පසු නිහඬව තත්පර 10න් ආපසු Lock වේ
         startSilent10SecReLock();
       } else {
         setShowModal(true);
