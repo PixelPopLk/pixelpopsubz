@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink, CheckCircle2 } from "lucide-react";
+import { Download, Lock, AlertTriangle, CheckCircle, X, ExternalLink } from "lucide-react";
 import { supabase, logDownload } from "@/integrations/supabase/client";
 
 const MONETAG_URL = "https://acorntar.com/fncjyve9?key=a347a729277e7dcc5e07924adff80652";
 const ADSTERRA_URL = "https://acorntar.com/b795sywmp?key=20b07ce2b76b7238eae7acf49dd3a534";
 
 const COUNTDOWN_SECONDS = 5;
+const SILENT_RELOCK_MS = 10000; // කිසිදු දැනුම්දීමකින් තොරව තත්පර 10න් Lock වේ
 
 const getRandomAdUrl = () => (Math.random() < 0.5 ? MONETAG_URL : ADSTERRA_URL);
 
@@ -22,7 +23,7 @@ export function isSafeUrl(url: string | null | undefined): boolean {
   }
 }
 
-// 🚀 Fast Native Download (කිසිදු 400 Error එකක් නැතිව)
+// 🚀 Fast Native Download
 function triggerFastNativeDownload(rawUrl: string) {
   try {
     const cleanUrl = rawUrl.split("?")[0].trim();
@@ -45,6 +46,7 @@ interface DownloadCountdownModalProps {
   variant?: string;
   onClose: () => void;
   onUnlockSuccess: (link: string) => void;
+  onDownloadTriggered: () => void;
 }
 
 export function DownloadCountdownModal({
@@ -53,16 +55,16 @@ export function DownloadCountdownModal({
   variant = "direct",
   onClose,
   onUnlockSuccess,
+  onDownloadTriggered,
 }: DownloadCountdownModalProps) {
   const [status, setStatus] = useState<"idle" | "verifying" | "warning" | "completed">("idle");
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
-  const [downloadStarted, setDownloadStarted] = useState(false);
   const [resolvedLink, setResolvedLink] = useState<string>(downloadLink || "");
 
   const timerRef = useRef<any>(null);
-  const storagePrefix = `sub_ad_${subtitleId || "default"}`;
+  const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
+  const storagePrefix = `sub_ad_${subtitleId || "default"}_${normalizedVariant}`;
 
-  // Link එක ලබාගෙන Completed තත්ත්වයට පත් කිරීම
   const handleComplete = async () => {
     let finalLink = downloadLink || "";
 
@@ -73,7 +75,7 @@ export function DownloadCountdownModal({
         });
 
         if (!error && data) {
-          finalLink = variant === "telegram" ? data.telegram_link : data.download_link;
+          finalLink = normalizedVariant === "telegram" ? data.telegram_link : data.download_link;
         }
       } catch (err) {
         console.error("Error fetching link:", err);
@@ -85,7 +87,6 @@ export function DownloadCountdownModal({
     onUnlockSuccess(finalLink);
   };
 
-  // 🟢 Modal එක Open වෙද්දී කලින් Ad එක බලලා ඉවරදැයි පරීක්ෂා කිරීම (Refresh වුණත් වැඩ කරයි)
   useEffect(() => {
     try {
       const startTimeStr = localStorage.getItem(storagePrefix);
@@ -95,7 +96,6 @@ export function DownloadCountdownModal({
           handleComplete();
           return;
         } else {
-          // තව තත්පර කිහිපයක් ඉතිරිව ඇත්නම්
           const remaining = Math.max(1, COUNTDOWN_SECONDS - Math.floor(elapsed / 1000));
           setSecondsLeft(remaining);
           setStatus("warning");
@@ -106,7 +106,6 @@ export function DownloadCountdownModal({
     }
   }, []);
 
-  // Verification Timer එක
   useEffect(() => {
     if (status !== "verifying") {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -132,7 +131,6 @@ export function DownloadCountdownModal({
 
     timerRef.current = setInterval(checkTime, 200);
 
-    // User නැවත tab එකට ආ විට පරීක්ෂා කිරීම
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
         try {
@@ -166,7 +164,6 @@ export function DownloadCountdownModal({
   const handleStartVerification = (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    // 🟢 ආරම්භ කළ වෙලාව Phone එකේ ස්ථිරව Save කරගන්නවා
     try {
       localStorage.setItem(storagePrefix, String(Date.now()));
     } catch {
@@ -193,19 +190,17 @@ export function DownloadCountdownModal({
       return;
     }
 
-    setDownloadStarted(true);
-
-    if (variant === "telegram") {
+    if (normalizedVariant === "telegram") {
       window.open(resolvedLink.trim(), "_blank", "noopener");
     } else {
       triggerFastNativeDownload(resolvedLink);
     }
 
-    logDownload(subtitleId, variant);
+    logDownload(subtitleId, normalizedVariant);
 
-    setTimeout(() => {
-      onClose();
-    }, 1500);
+    // 🟢 බාගත කළ සැණින් නිහඬව තත්පර 10ක Re-lock timer එක ක්‍රියාත්මක කිරීම
+    onDownloadTriggered();
+    onClose();
   };
 
   const circumference = 2 * Math.PI * 32;
@@ -266,7 +261,7 @@ export function DownloadCountdownModal({
 
                 <div className="space-y-3">
                   <h3 className="text-lg font-bold text-foreground">
-                    {variant === "telegram" ? "Telegram වෙතින් බාගත කිරීමට" : "ඩවුන්ලෝඩ් කරගැනීම සඳහා"}
+                    {normalizedVariant === "telegram" ? "Telegram වෙතින් බාගත කිරීමට" : "ඩවුන්ලෝඩ් කරගැනීම සඳහා"}
                   </h3>
 
                   <div className="p-4 rounded-2xl bg-primary/10 border border-primary/25 text-foreground font-medium text-sm leading-relaxed text-center space-y-2">
@@ -321,14 +316,10 @@ export function DownloadCountdownModal({
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-emerald-400">
-                    {downloadStarted ? "බාගත කිරීම ආරම්භ විය!" : "ඩවුන්ලෝඩ් කිරීමට සූදානම්!"}
+                    ඩවුන්ලෝඩ් කිරීමට සූදානම්!
                   </h3>
                   <p className="mt-2 text-sm text-foreground/90 font-medium leading-relaxed">
-                    {downloadStarted ? (
-                      "ඔබගේ දුරකථනයේ Notification තීරුව පරීක්ෂා කරන්න."
-                    ) : (
-                      "පහත කොළපාට බටන් එක ක්ලික් කර ගොනුව බාගත කරගන්න."
-                    )}
+                    පහත කොළපාට බටන් එක ක්ලික් කර ගොනුව බාගත කරගන්න.
                   </p>
                 </div>
 
@@ -340,17 +331,8 @@ export function DownloadCountdownModal({
                     onClick={handleFinalDownload}
                     className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-bold text-center transition cursor-pointer w-full shadow-lg active:scale-98"
                   >
-                    {downloadStarted ? (
-                      <>
-                        <CheckCircle2 className="w-5 h-5 text-white animate-pulse" />
-                        බාගත වෙමින් පවතී...
-                      </>
-                    ) : (
-                      <>
-                        <Download className="w-4 h-4 text-white" />
-                        {variant === "telegram" ? "Open in Telegram" : "Start Download | ඩවුන්ලෝඩ් කරන්න"}
-                      </>
-                    )}
+                    <Download className="w-4 h-4 text-white" />
+                    {normalizedVariant === "telegram" ? "Open in Telegram" : "Start Download | ඩවුන්ලෝඩ් කරන්න"}
                   </button>
 
                   <button
@@ -453,12 +435,61 @@ export function DownloadButton({
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [unlockedUrl, setUnlockedUrl] = useState<string>(downloadLink || "");
 
-  const cacheKey = `sub_unlocked_link_${subtitleId || "default"}`;
-  const statusKey = `sub_status_${subtitleId || "default"}`;
+  const reLockTimerRef = useRef<any>(null);
 
-  // 🟢 Page එක Reload වුණත් Phone එකේ Storage එකෙන් අඳුරගෙන කෙලින්ම කොළ පාට Button එක පෙන්වීම
+  const normalizedVariant = variant === "telegram" ? "telegram" : "direct";
+  const subId = subtitleId || "default";
+  const cacheKey = `sub_unlocked_link_${subId}_${normalizedVariant}`;
+  const statusKey = `sub_status_${subId}_${normalizedVariant}`;
+  const storagePrefix = `sub_ad_${subId}_${normalizedVariant}`;
+  const lockExpiryKey = `sub_lock_expiry_${subId}_${normalizedVariant}`;
+
+  // බටන් එක නිහඬව Lock කිරීම
+  const lockButton = () => {
+    setIsUnlocked(false);
+    setUnlockedUrl("");
+    try {
+      localStorage.removeItem(cacheKey);
+      localStorage.removeItem(statusKey);
+      localStorage.removeItem(storagePrefix);
+      localStorage.removeItem(lockExpiryKey);
+    } catch {
+      /* noop */
+    }
+  };
+
+  // 🟢 Download කළ පසු කිසිදු දැනුම්දීමකින් තොරව තත්පර 10කින් නිහඬව Lock වීම
+  const startSilent10SecReLock = () => {
+    const expireAt = Date.now() + SILENT_RELOCK_MS;
+    try {
+      localStorage.setItem(lockExpiryKey, String(expireAt));
+    } catch {
+      /* noop */
+    }
+
+    if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
+    reLockTimerRef.current = setTimeout(() => {
+      lockButton();
+    }, SILENT_RELOCK_MS);
+  };
+
   useEffect(() => {
     try {
+      const expireAtStr = localStorage.getItem(lockExpiryKey);
+      if (expireAtStr) {
+        const expireAt = parseInt(expireAtStr, 10);
+        if (Date.now() >= expireAt) {
+          lockButton();
+          return;
+        } else {
+          const remaining = expireAt - Date.now();
+          if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
+          reLockTimerRef.current = setTimeout(() => {
+            lockButton();
+          }, remaining);
+        }
+      }
+
       const savedLink = localStorage.getItem(cacheKey);
       const isReady = localStorage.getItem(statusKey) === "true";
 
@@ -466,8 +497,7 @@ export function DownloadButton({
         setIsUnlocked(true);
         setUnlockedUrl(savedLink);
       } else {
-        // අදාළ Subtitle එකට තත්පර 5 ගෙවිලාදැයි බැලීම
-        const startTimeStr = localStorage.getItem(`sub_ad_${subtitleId || "default"}`);
+        const startTimeStr = localStorage.getItem(storagePrefix);
         if (startTimeStr) {
           const elapsed = Date.now() - parseInt(startTimeStr, 10);
           if (elapsed >= COUNTDOWN_SECONDS * 1000) {
@@ -479,12 +509,15 @@ export function DownloadButton({
     } catch {
       /* noop */
     }
-  }, [cacheKey, statusKey, subtitleId]);
+
+    return () => {
+      if (reLockTimerRef.current) clearTimeout(reLockTimerRef.current);
+    };
+  }, [cacheKey, statusKey, storagePrefix, lockExpiryKey]);
 
   const handleDownloadClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
-    // Unlock වී ඇත්නම් ක්ෂණික Direct Download
     if (isUnlocked) {
       let finalLink = unlockedUrl || downloadLink;
 
@@ -494,7 +527,7 @@ export function DownloadButton({
             target_id: Number(subtitleId),
           });
           if (data) {
-            finalLink = variant === "telegram" ? data.telegram_link : data.download_link;
+            finalLink = normalizedVariant === "telegram" ? data.telegram_link : data.download_link;
             setUnlockedUrl(finalLink);
           }
         } catch {
@@ -503,14 +536,16 @@ export function DownloadButton({
       }
 
       if (finalLink && isSafeUrl(finalLink)) {
-        if (variant === "telegram") {
+        if (normalizedVariant === "telegram") {
           window.open(finalLink.trim(), "_blank", "noopener");
         } else {
           triggerFastNativeDownload(finalLink);
         }
-        logDownload(subtitleId, variant);
+        logDownload(subtitleId, normalizedVariant);
+
+        // 🟢 Direct Download කළ පසු නිහඬව තත්පර 10න් ආපසු Lock වේ
+        startSilent10SecReLock();
       } else {
-        // Link එකක් නැත්නම් Modal එක open කර ලබා ගැනීම
         setShowModal(true);
       }
     } else {
@@ -532,14 +567,13 @@ export function DownloadButton({
   const buttonClass = className ?? (
     isUnlocked
       ? "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow-[0_4px_20px_rgba(16,185,129,0.4)] transition-all cursor-pointer active:scale-95"
-      : variant === "telegram"
+      : normalizedVariant === "telegram"
       ? "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold text-sm shadow-[0_4px_15px_rgba(6,182,212,0.35)] hover:opacity-95 transition cursor-pointer"
       : "inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-gradient-primary text-primary-foreground font-bold text-sm shadow-glow hover:opacity-95 transition cursor-pointer"
   );
 
   return (
     <>
-      {/* 🟢 Page එක Reload වුණත් මේ Button එක කොළ පාට වී "Download Now" ලෙස පවතී */}
       <button
         type="button"
         data-no-ad="true"
@@ -548,7 +582,7 @@ export function DownloadButton({
         className={buttonClass}
       >
         {isUnlocked ? (
-          <CheckCircle className="w-5 h-5 text-white animate-pulse" />
+          <CheckCircle className="w-5 h-5 text-white" />
         ) : (
           <Download className="w-4 h-4" />
         )}
@@ -563,6 +597,7 @@ export function DownloadButton({
           variant={variant}
           onClose={() => setShowModal(false)}
           onUnlockSuccess={handleUnlockSuccess}
+          onDownloadTriggered={startSilent10SecReLock}
         />
       )}
     </>
